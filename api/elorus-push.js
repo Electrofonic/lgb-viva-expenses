@@ -663,15 +663,26 @@ module.exports = async (req, res) => {
       if (!cronOk && !(aw2 && verifyToken(aw2, at2))) return res.status(403).json({ error: "Μη εξουσιοδοτημένο" });
 
       const byTag = new Map(), expById = new Map();
-      for (let page = 1; page <= 3; page++) {
-        const r = await elorus("GET", `expenses/?page_size=200&page=${page}&ordering=-date`);
-        const rows = (r.body && r.body.results) || [];
-        for (const e of rows) {
-          expById.set(String(e.id), e);
-          const cid = String(e.custom_id || "");
-          if (/^VIVA-/.test(cid)) { if (!byTag.has(cid)) byTag.set(cid, []); byTag.get(cid).push(e); }
+      // Δοκιμάζουμε 200/σελίδα· αν το Elorus γυρίσει άδειο (όριο/σφάλμα), fallback σε 50.
+      let scanOk = false;
+      for (const sz of [200, 50]) {
+        expById.clear(); byTag.clear();
+        for (let page = 1; page <= 6; page++) {
+          const r = await elorus("GET", `expenses/?page_size=${sz}&page=${page}&ordering=-date`);
+          const rows = (r.body && r.body.results) || [];
+          for (const e of rows) {
+            expById.set(String(e.id), e);
+            const cid = String(e.custom_id || "");
+            if (/^VIVA-/.test(cid)) { if (!byTag.has(cid)) byTag.set(cid, []); byTag.get(cid).push(e); }
+          }
+          if (!r.body || !r.body.next) break;
         }
-        if (!r.body || !r.body.next) break;
+        if (expById.size > 0) { scanOk = true; break; }
+      }
+      // ΔΙΚΛΕΙΔΑ: αν η σάρωση απέτυχε (0 έξοδα), ΔΕΝ βγάζουμε ψεύτικα «ΟΡΦΑΝΑ»/«διπλά».
+      // Επιστρέφουμε ουδέτερο αποτέλεσμα ώστε να μη σκάσει λάθος συναγερμός στον Κώστα.
+      if (!scanOk) {
+        return res.status(200).json({ ok: true, generatedAt: new Date().toISOString(), scanFailed: true, elorusScanned: 0, ourEntries: 0, totalIssues: 0, issues: [], note: "Η ανάγνωση του Elorus δεν απάντησε αυτή τη στιγμή — παραλείπω τον έλεγχο για να μη βγει ψευδής συναγερμός. Θα ξαναγίνει στο επόμενο τρέξιμο." });
       }
 
       const issues = [];
