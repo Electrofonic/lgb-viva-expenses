@@ -69,7 +69,9 @@ module.exports = async (req, res) => {
   try {
     let body = req.body;
     if (typeof body === "string") body = JSON.parse(body || "{}");
-    const { w, t, chargeId, imageBase64, project, check } = body || {};
+    const { w, t, chargeId, imageBase64, project, check, append } = body || {};
+    // append=true → ΠΡΟΣΘΕΤΟ αρχείο (π.χ. απόδειξη μεταφορικών κούριερ) χωρίς να αντικαταστήσει
+    // το κύριο. Έτσι μια χρέωση efood 17€ μπορεί να έχει: απόδειξη φαγητού 15€ + μεταφορικά 2€.
     if (!w || !verifyToken(String(w), String(t || "")))
       return res.status(403).json({ error: "Άκυρο link" });
     if (!chargeId) return res.status(400).json({ error: "λείπει το chargeId" });
@@ -93,19 +95,37 @@ module.exports = async (req, res) => {
       const bytes = Buffer.from(b64, "base64");
       if (bytes.length > 8 * 1024 * 1024)
         return res.status(413).json({ error: "Πολύ μεγάλο αρχείο (max 8MB)" });
-      const up = await sbUploadReceipt(`${w}/${chargeId}.${ext}`, bytes, ctype);
+
+      // Λίστα αρχείων της χρέωσης. Συμβατότητα: αν υπάρχει παλιό μονό receipt_url, το θεωρούμε το κύριο.
+      const prevRaw = cur.raw || {};
+      let files = Array.isArray(prevRaw.receipts) ? prevRaw.receipts.slice()
+        : (cur.receipt_url ? [{ url: cur.receipt_url, main: true }] : []);
+
+      const isAppend = !!append && files.length > 0;
+      // Μοναδικό path ανά αρχείο ώστε να μην πατιούνται μεταξύ τους.
+      const slot = isAppend ? `_${files.length + 1}` : "";
+      const up = await sbUploadReceipt(`${w}/${chargeId}${slot}.${ext}`, bytes, ctype);
       if (!up.ok) return res.status(500).json({ error: "αποτυχία ανεβάσματος", detail: up.err });
-      receiptUrl = up.url;
+
+      const chk = (check && check.verdict) ? check : await validateReceipt(imageBase64, cur.amount, cur.merchant);
+      const entry = { url: up.url, at: new Date().toISOString(), main: !isAppend, check: chk || null };
+
+      if (isAppend) {
+        files.push(entry);                                  // ΠΡΟΣΘΕΤΟ αρχείο
+      } else {
+        files = [entry, ...files.filter((f) => !f.main)];   // ΚΥΡΙΟ (αντικαθιστά μόνο το κύριο, κρατά τα έξτρα)
+      }
+      receiptUrl = (files.find((f) => f.main) || files[0]).url;   // το κύριο εμφανίζεται δεξιά
       patch.has_receipt = true;
       patch.receipt_url = receiptUrl;
-      // «Δεύτερο μάτι» (ΔΩΡΕΑΝ): προτίμησε το τοπικό OCR του browser (check). Αν λείπει & υπάρχει AI-κλειδί, fallback.
-      const chk = (check && check.verdict) ? check : await validateReceipt(imageBase64, cur.amount, cur.merchant);
-      patch.raw = Object.assign({}, cur.raw || {}, { receipt_check: chk });
-      // Στοιχεία τιμολογίου (αρ. + ημ/νία έκδοσης) από το OCR του ανεβάσματος — ΜΙΑ φορά,
-      // εδώ. Το Elorus push τα χρησιμοποιεί έτοιμα, χωρίς δεύτερη αναγνώριση.
-      const inv = chk && chk.invoice;
-      if (inv && (inv.number || inv.date || inv.vat)) {
-        patch.raw.invoice = { number: inv.number || null, date: inv.date || null, vat: inv.vat || null, isInvoice: !!inv.isInvoice, at: new Date().toISOString() };
+      patch.raw = Object.assign({}, prevRaw, { receipts: files });
+      // receipt_check + στοιχεία τιμολογίου: ΜΟΝΟ από το ΚΥΡΙΟ αρχείο (όχι από τα μεταφορικά).
+      if (!isAppend) {
+        patch.raw.receipt_check = chk;
+        const inv = chk && chk.invoice;
+        if (inv && (inv.number || inv.date || inv.vat)) {
+          patch.raw.invoice = { number: inv.number || null, date: inv.date || null, vat: inv.vat || null, isInvoice: !!inv.isInvoice, at: new Date().toISOString() };
+        }
       }
     }
     if (project !== undefined) patch.project = project || null;
@@ -118,7 +138,8 @@ module.exports = async (req, res) => {
 
     const upd = await sbUpdate("charges", `id=eq.${encodeURIComponent(chargeId)}`, patch);
     if (!upd.ok) return res.status(500).json({ error: "αποτυχία αποθήκευσης" });
-    return res.status(200).json({ ok: true, receipt_url: receiptUrl, status: patch.status, receipt_check: patch.raw ? patch.raw.receipt_check : null });
+    const rc = patch.raw && patch.raw.receipts ? patch.raw.receipts : [];
+    return res.status(200).json({ ok: true, receipt_url: receiptUrl, status: patch.status, files: rc.length, receipts: rc.map((f) => f.url), receipt_check: patch.raw ? patch.raw.receipt_check : null });
   } catch (err) {
     return res.status(500).json({ error: String(err.message || err) });
   }

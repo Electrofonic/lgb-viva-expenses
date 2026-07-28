@@ -179,6 +179,12 @@ module.exports = async (req, res) => {
       occurred_at: c.occurred_at,
       has_receipt: !!c.has_receipt,
       receipt_url: c.receipt_url || null,
+      // ΟΛΑ τα αρχεία της χρέωσης (κύριο + πρόσθετα π.χ. μεταφορικά). Κύριο πρώτο.
+      receipts: (() => {
+        const r = c.raw && Array.isArray(c.raw.receipts) ? c.raw.receipts : null;
+        if (r && r.length) return r.slice().sort((a, b) => (b.main ? 1 : 0) - (a.main ? 1 : 0)).map((f) => f.url);
+        return c.receipt_url ? [c.receipt_url] : [];
+      })(),
       project: c.project || null,
       pending: c.status === "PENDING_CLEAR",
       receipt_check: (c.raw && c.raw.receipt_check) || null,
