@@ -242,7 +242,29 @@ function cardHtml(c,idx){
     <label class="up big ${c.has_receipt?"done":""}" for="f-${c.id}">${c.has_receipt?"✓ Αποθηκεύτηκε — πάτησε για αλλαγή":"📎 Ανέβασε: φωτο · screenshot · PDF · αρχείο"}</label>
     <input type="file" id="f-${c.id}" accept="image/*,application/pdf" onchange="attachFile(${c.id},this)">
     <div class="uphint" style="background:#eef4ff;border-color:#c9d6ff;color:#3a4a7a">📱 Κινητό: ανοίγει Κάμερα / Φωτογραφίες / Αρχεία — διάλεξε ό,τι θες.<br>💻 Υπολογιστής: διάλεξε αρχείο ή κάνε <b>Ctrl/⌘+V</b> για paste screenshot.</div>
+    ${extrasBlock(c)}
     <select onchange="setProject(${c.id},this.value)">${opts}</select>
+  </div>`;
+}
+// Πρόσθετα αρχεία (π.χ. απόδειξη μεταφορικών κούριερ) — φαίνεται μόνο αφού μπει το κύριο.
+function extrasBlock(c){
+  if(!c.has_receipt) return "";
+  const list=Array.isArray(c.receipts)?c.receipts:(c.receipt_url?[c.receipt_url]:[]);
+  const extra=list.slice(1);   // πέρα από το κύριο
+  const rows=extra.map((u,i)=>{
+    const pdf=/\.pdf(\?|$)/i.test(u||"");
+    const dl=u+(u.includes("?")?"&":"?")+"download=apodeixi_"+c.id+"_"+(i+2)+(pdf?".pdf":".jpg");
+    return `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12.5px">
+      <span style="background:#eef1ff;border:1px solid #c9d0f5;border-radius:6px;padding:1px 7px;font-weight:700;color:#2647c4">Αρχείο ${i+2}</span>
+      <a href="${u}" target="_blank" rel="noopener" style="color:#3f3fae">${pdf?"📄 άνοιγμα":"🖼 άνοιγμα"}</a>
+      <a href="${dl}" style="color:#6b7680">⬇</a></div>`;
+  }).join("");
+  return `<div style="margin-top:10px;padding:10px 12px;background:#f7f9ff;border:1px solid #dfe4f5;border-radius:11px">
+    <div style="font-size:12.5px;font-weight:700;color:#2a3157">🧾 Αρχεία αυτής της χρέωσης: ${list.length}${list.length>1?" (κύριο + "+extra.length+" έξτρα)":""}</div>
+    <div style="font-size:11.5px;color:#6b7680;margin-top:2px">Αν πλήρωσες <b>π.χ. φαγητό + μεταφορικά</b> με χωριστές αποδείξεις, ανέβασε κι εδώ τη 2η/3η ώστε να συμπληρώνεται το σύνολο.</div>
+    ${rows}
+    <label class="up alt" for="fx-${c.id}" style="margin-top:9px">➕ Πρόσθεσε κι άλλο αρχείο (μεταφορικά / έξτρα απόδειξη)</label>
+    <input type="file" id="fx-${c.id}" accept="image/*,application/pdf" onchange="attachExtra(${c.id},this)">
   </div>`;
 }
 // Σμίκρυνση εικόνας πριν το ανέβασμα (μικρό μέγεθος, γρήγορο)
@@ -420,6 +442,22 @@ async function attachFile(id,input){
       const dataUrl=await resize(f); await handleImage(id,dataUrl);         // εικόνα → έλεγχος ποιότητας
     }
   }catch(e){toast("⚠️ Δεν ανέβηκε — δοκίμασε ξανά");const card=document.getElementById("c-"+id);if(card)card.classList.remove("busy");}
+}
+// ΠΡΟΣΘΕΤΟ αρχείο (μεταφορικά / έξτρα απόδειξη) — append=true. ΧΩΡΙΣ έλεγχο ποιότητας/ποσού:
+// είναι συμπληρωματικό, το ποσό της χρέωσης το ξέρει η Viva. Δέχεται φωτο ή PDF.
+async function attachExtra(id,input){
+  const f=input.files&&input.files[0];if(!f)return;
+  const isPdf=f.type==="application/pdf"||/\.pdf$/i.test(f.name||"");
+  const card=document.getElementById("c-"+id);
+  try{
+    if(isPdf&&f.size>3*1024*1024){toast("⚠️ Πολύ μεγάλο PDF (max ~3MB). Συμπίεσέ το.");input.value="";return;}
+    if(card)card.classList.add("busy");toast("⏳ Ανεβαίνει το πρόσθετο αρχείο…",9000);
+    const dataUrl=isPdf?await fileToDataURL(f):await resize(f);
+    const r=await fetch("/api/upload-receipt",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({w:W,t:T,chargeId:id,imageBase64:dataUrl,append:true})});
+    const d=await r.json();if(!r.ok)throw new Error(d.error||"error");
+    toast("✅ Προστέθηκε — τώρα η χρέωση έχει "+(d.files||2)+" αρχεία");await refresh();
+  }catch(e){toast("⚠️ Δεν ανέβηκε το πρόσθετο — δοκίμασε ξανά");if(card)card.classList.remove("busy");}
 }
 // Επικόλληση screenshot από το πρόχειρο (print screen → clipboard). Το ανεβάζει σαν εικόνα.
 async function pasteShot(id){

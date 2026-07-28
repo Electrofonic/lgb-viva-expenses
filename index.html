@@ -912,14 +912,18 @@ async function downloadDocs(which,btn){
       for(const c of list){i++;
         const p=person(c.personId),inv=(c.raw&&c.raw.invoice)||{};
         const dd=(c.dm||"").replace(/\//g,"-"),hh=(c.hm||"").replace(/:/g,"");
-        const ext=/\.pdf(\?|$)/i.test(c.receiptUrl||"")?"pdf":"jpg";
-        const fname=String(i).padStart(2,"0")+"_"+dd+"_"+hh+"_"+safe(c.merchant)+"_"+c.amount.toFixed(2)+"e."+ext;
+        const files=(c.receiptFiles&&c.receiptFiles.length)?c.receiptFiles:(c.receiptUrl?[c.receiptUrl]:[]);
+        const base=String(i).padStart(2,"0")+"_"+dd+"_"+hh+"_"+safe(c.merchant)+"_"+c.amount.toFixed(2)+"e";
         let stored="";
-        try{const r=await fetch(c.receiptUrl);const b=await r.blob();
-            zip.file((keys.length>1?t.dir+"/":"")+fname,b);stored=fname;okc++;}
-        catch(e){stored="⚠ ΔΕΝ ΚΑΤΕΒΗΚΕ";failed++;}
+        for(let fi=0;fi<files.length;fi++){
+          const u=files[fi];const ext=/\.pdf(\?|$)/i.test(u||"")?"pdf":"jpg";
+          const fname=base+(files.length>1?(fi===0?"_1κυριο":"_"+(fi+1)+"εξτρα"):"")+"."+ext;
+          try{const r=await fetch(u);const b=await r.blob();
+              zip.file((keys.length>1?t.dir+"/":"")+fname,b);stored+=(stored?" + ":"")+fname;okc++;}
+          catch(e){stored+=(stored?" + ":"")+"⚠ΔΕΝ ΚΑΤΕΒΗΚΕ";failed++;}
+        }
         const row=[c.dm||"",c.hm||"",t.short,c.merchant,c.amount.toFixed(2),inv.vat||"",inv.number||"",
-                   inv.date||"",p?p.name:"",c.project||"",stored,(c.raw&&c.raw.elorus_id)?"καταχωρημένο":"—"];
+                   inv.date||"",p?p.name:"",c.project||"",stored+(files.length>1?" ("+files.length+" αρχεία)":""),(c.raw&&c.raw.elorus_id)?"καταχωρημένο":"—"];
         rows.push(row); master.push(row);
       }
       zip.file((keys.length>1?t.dir+"/":"")+"_ΛΙΣΤΑ_"+t.short+"_"+SELECTED_MONTH+".csv",
@@ -1017,6 +1021,7 @@ async function reloadState(manual){
           merchant:c.merchant||"—",
           merchantRaw:c.merchant||"",   // ΑΚΑΘΑΡΙΣΤΟ όνομα: κρατά τη χώρα (…ATHINA GRC / …SAN FRANCISCO USA)
           amount:+c.amount,receipt:!!c.has_receipt,receiptUrl:c.receipt_url||null,
+          receiptFiles:(c.raw&&Array.isArray(c.raw.receipts)&&c.raw.receipts.length)?c.raw.receipts.slice().sort((a,b)=>(b.main?1:0)-(a.main?1:0)).map(f=>f.url):(c.receipt_url?[c.receipt_url]:[]),
           project:c.project||null,comment:c.comment||"",walletId:c.wallet_id,
           pending:c.status==="PENDING_CLEAR",status:c.status,
           vid:String(c.viva_tx_id||""),
@@ -1030,7 +1035,7 @@ async function reloadState(manual){
          if(!ex){mp.set(k,c);continue;}
          if(isDup(ex.merchant)&&!isDup(c.merchant)) ex.merchant=c.merchant;
          if(String(c.when||"")<String(ex.when||"")){ex.when=c.when;ex.dm=c.dm;ex.hm=c.hm;ex.day=c.day;}
-         if(c.receipt){ex.receipt=true;ex.receiptUrl=c.receiptUrl||ex.receiptUrl;}
+         if(c.receipt){ex.receipt=true;ex.receiptUrl=c.receiptUrl||ex.receiptUrl;if((c.receiptFiles||[]).length>(ex.receiptFiles||[]).length)ex.receiptFiles=c.receiptFiles;}
          if(c.raw&&(c.raw.invoice||c.raw.elorus_id))ex.raw=Object.assign({},ex.raw||{},c.raw);
          if(c.project){ex.project=c.project;ex.internal=c.internal;}
          if(String(c.status)!=="PENDING_CLEAR"){ex.status=c.status;ex.pending=false;}
