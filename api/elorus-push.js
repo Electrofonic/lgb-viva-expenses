@@ -93,6 +93,7 @@ function fixDsTime(iso) { try { const w = new Date(iso); return new Date(w.getTi
 // ΙΔΙΟ dedup με το dashboard/my.js — ΚΡΙΣΙΜΟ ώστε διπλές φυσικές εγγραφές (cron/settlement)
 // της ίδιας αγοράς να ΜΗΝ δημιουργούν διπλά έξοδα στο Elorus.
 function dedupCharges(rows) {
+  rows = (rows || []).filter((r) => String(r && r.status) !== "VOID_JULY"); // μηδενισμένες Ιουλίου → εκτός
   const norm = (id) => String(id || "").replace(/^AUTH-/, "");
   const isDup = (m) => /Viva Wallet Card/i.test(m || "");
   rows = (rows || []).map((c) => isDup(c.merchant) ? { ...c, occurred_at: fixDsTime(c.occurred_at) } : { ...c });
@@ -628,6 +629,25 @@ module.exports = async (req, res) => {
     const q = req.query || {};
     let body = req.body; if (typeof body === "string") { try { body = JSON.parse(body || "{}"); } catch (e) { body = {}; } }
     body = body || {};
+
+    // ---- ΜΗΔΕΝΙΣΜΟΣ ΙΟΥΛΙΟΥ ΧΩΡΙΣ ΑΠΟΔΕΙΞΗ: ?voidJuly=1 (POST) ----
+    // Κρατά τις χρεώσεις Ιουλίου που ΕΧΟΥΝ απόδειξη/PDF (για τη λογίστρια). Βγάζει ΕΚΤΟΣ
+    // (soft-void, status=VOID_JULY) όσες ΔΕΝ έχουν τίποτα ανεβασμένο. ΔΕΝ διαγράφει —
+    // αναστρέψιμο. ?voidJuly=1&dry=1 → μόνο προεπισκόπηση, χωρίς αλλαγή.
+    if (q.voidJuly) {
+      const vw = String(body.w || q.w || ""), vt = String(body.t || q.t || "");
+      if (!(vw && verifyToken(vw, vt))) return res.status(403).json({ error: "Μη εξουσιοδοτημένο" });
+      const dry = !!(q.dry || body.dry);
+      const JUL_FROM = "2026-07-01T00:00:00", JUL_TO = "2026-08-01T00:00:00";
+      // ΜΟΝΟ χρεώσεις Ιουλίου, ΧΩΡΙΣ απόδειξη. (Οι με απόδειξη μένουν ανέπαφες.)
+      const flt = `occurred_at=gte.${JUL_FROM}&occurred_at=lt.${JUL_TO}&has_receipt=eq.false&status=neq.VOID_JULY&select=id,wallet_id,amount,merchant,occurred_at`;
+      const rows = await sbSelect("charges", flt);
+      const preview = (rows || []).slice(0, 8).map((r) => ({ id: r.id, amount: Math.abs(+r.amount), store: cleanName(r.merchant), date: grDate(r.occurred_at) }));
+      if (dry) return res.status(200).json({ ok: true, dry: true, willVoid: (rows || []).length, sample: preview });
+      // Εκτέλεση: bulk PATCH status → VOID_JULY (μία κλήση, με το ίδιο φίλτρο).
+      const upd = await sbUpdate("charges", `occurred_at=gte.${JUL_FROM}&occurred_at=lt.${JUL_TO}&has_receipt=eq.false&status=neq.VOID_JULY`, { status: "VOID_JULY" });
+      return res.status(200).json({ ok: !!upd.ok || upd.skipped ? undefined : true, ok2: true, voided: (rows || []).length, sample: preview, note: "Οι χρεώσεις Ιουλίου χωρίς απόδειξη βγήκαν εκτός (VOID_JULY). Οι με απόδειξη κρατήθηκαν. Αναστρέψιμο." });
+    }
 
     // ---- ΑΝΑΦΟΡΑ ΕΚΚΡΕΜΟΤΗΤΩΝ (read-only): ?report=1 ----
     // Λέει σε απλά ελληνικά ΤΙ καταχωρήθηκε και ΤΙ έμεινε πίσω — με τον ΛΟΓΟ για το καθένα.

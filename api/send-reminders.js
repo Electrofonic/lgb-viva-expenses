@@ -16,6 +16,7 @@ function athOffMin(d) {
 }
 function fixDsTime(iso) { try { const w = new Date(iso); return new Date(w.getTime() - athOffMin(w) * 60000).toISOString(); } catch (e) { return iso; } }
 function dedupCharges(rows) {
+  rows = (rows || []).filter((r) => String(r && r.status) !== "VOID_JULY"); // μηδενισμένες Ιουλίου → εκτός
   const norm = (id) => String(id || "").replace(/^AUTH-/, "");
   const isDup = (m) => /Viva Wallet Card/i.test(m || "");
   rows = (rows || []).map((c) => isDup(c.merchant) ? { ...c, occurred_at: fixDsTime(c.occurred_at) } : { ...c });

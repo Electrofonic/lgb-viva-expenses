@@ -82,6 +82,7 @@ function fixDsTime(iso) { try { const w = new Date(iso); return new Date(w.getTi
 
 // Καθαρισμός διπλοεγγραφών + διόρθωση ωρών.
 function dedupCharges(rows) {
+  rows = (rows || []).filter((r) => String(r && r.status) !== "VOID_JULY"); // μηδενισμένες Ιουλίου → εκτός
   const norm = (id) => String(id || "").replace(/^AUTH-/, "");
   const isDup = (m) => /Viva Wallet Card/i.test(m || "");   // εγγραφή από cron (δέσμευση/εκκαθάριση)
   // 0) Διόρθωσε τις ώρες των cron-εγγραφών

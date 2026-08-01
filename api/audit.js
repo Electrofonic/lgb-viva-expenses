@@ -24,6 +24,7 @@ function athDate(iso) { try { return new Intl.DateTimeFormat("en-CA", { timeZone
 
 // --- ίδιο dedup με την εμφάνιση (για να ελέγχουμε ΑΚΡΙΒΩΣ ό,τι βλέπει ο χρήστης) ---
 function dedupCharges(rows) {
+  rows = (rows || []).filter((r) => String(r && r.status) !== "VOID_JULY"); // μηδενισμένες Ιουλίου → εκτός
   const norm = (id) => String(id || "").replace(/^AUTH-/, "");
   const isDup = (m) => /Viva Wallet Card/i.test(m || "");
   rows = (rows || []).map((c) => isDup(c.merchant) ? { ...c, occurred_at: fixDsTime(c.occurred_at) } : { ...c });
