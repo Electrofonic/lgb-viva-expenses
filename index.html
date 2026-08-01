@@ -1009,6 +1009,7 @@ async function reloadState(manual){
       ALL_CHARGES.length=0;
       let idx=0;
       d.charges.forEach((c)=>{
+        if(String(c.status)==="VOID_JULY") return; // μηδενισμένες Ιουλίου (χωρίς απόδειξη) → εκτός
         const p=PEOPLE.find(x=>x.walletId===c.wallet_id);
         if(!p) return; // δεν είναι κάρτα-μέλους → αγνόησέ τη (καμία ορφανή εκκρεμότητα)
         // ΔΕΝ φιλτράρουμε εδώ με START_DATE — πρώτα κάνουμε dedup σε ΟΛΟΥΣ τους μήνες (όπως η προσωπική σελίδα),
