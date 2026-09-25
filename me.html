@@ -149,7 +149,7 @@ document.addEventListener("paste",async e=>{
   try{if(card)card.classList.add("busy");toast("⏳ Ανεβαίνει & ελέγχω το screenshot… περίμενε",9000);
     const dataUrl=await resize(blob);
     await handleImage(id,dataUrl);
-  }catch(err){toast("⚠️ Δεν ανέβηκε — δοκίμασε ξανά");if(card)card.classList.remove("busy");}
+  }catch(err){if(!(err&&err.resize))toast("⚠️ Δεν ανέβηκε — δοκίμασε ξανά");if(card)card.classList.remove("busy");}
 });
 // Φέρνει ΟΛΟΥΣ τους μήνες· κρατάει τον επιλεγμένο μήνα (SM) ώστε μετά από ανέβασμα να μη «πηδάει» πίσω.
 async function refresh(){
@@ -268,16 +268,24 @@ function extrasBlock(c){
   </div>`;
 }
 // Σμίκρυνση εικόνας πριν το ανέβασμα (μικρό μέγεθος, γρήγορο)
-function resize(file){return new Promise(res=>{
+function resize(file){return new Promise((res,rej)=>{
+  // [25/9] Αν το κινητό δώσει φωτογραφία που ο browser δεν ανοίγει (π.χ. HEIC), ΔΕΝ κολλάμε σιωπηλά:
+  // λέμε στον υπάλληλο τι να κάνει και ξεκλειδώνουμε την κάρτα.
+  let done=false;const fail=(why)=>{if(done)return;done=true;
+    toast("⚠️ Η φωτογραφία δεν ανοίγει ("+(/heic|heif/i.test((file&&(file.type||file.name))||"")?"HEIC":"μορφή")+"). Βγάλε screenshot της απόδειξης ή ρύθμισε την κάμερα σε JPG και ξαναδοκίμασε.",9000);
+    const er=new Error(why);er.resize=true;rej(er);};
+  const timer=setTimeout(()=>fail("timeout"),25000);
   const img=new Image();const rd=new FileReader();
-  rd.onload=()=>{img.onload=()=>{
+  rd.onerror=()=>{clearTimeout(timer);fail("read");};
+  img.onerror=()=>{clearTimeout(timer);fail("decode");};
+  rd.onload=()=>{img.onload=()=>{try{
     // Υψηλή ανάλυση ώστε η λογίστρια να μπορεί να την κατεβάσει, να την εκτυπώσει & να την αρχειοθετήσει (hard copy).
     const max=2200;let{width:w,height:h}=img;
     if(w>max||h>max){if(w>h){h=Math.round(h*max/w);w=max;}else{w=Math.round(w*max/h);h=max;}}
     const cv=document.createElement("canvas");cv.width=w;cv.height=h;
     cv.getContext("2d").drawImage(img,0,0,w,h);
-    res(cv.toDataURL("image/jpeg",0.92));
-  };img.src=rd.result;};
+    clearTimeout(timer);if(!done){done=true;res(cv.toDataURL("image/jpeg",0.92));}
+  }catch(e){clearTimeout(timer);fail("canvas");}};img.src=rd.result;};
   rd.readAsDataURL(file);
 });}
 function amtOf(id){const c=ALLCH.find(x=>x.id===id);return c?c.amount:0;}
@@ -426,7 +434,7 @@ async function handleImage(id,dataUrl){
 async function upload(id,input){
   const f=input.files&&input.files[0];if(!f)return;
   try{ const dataUrl=await resize(f); await handleImage(id,dataUrl); }
-  catch(e){toast("⚠️ Δεν ανέβηκε — δοκίμασε ξανά");}
+  catch(e){if(!(e&&e.resize))toast("⚠️ Δεν ανέβηκε — δοκίμασε ξανά");}
 }
 // Επισύναψη αρχείου (π.χ. PDF τιμολογίου από email) — ΧΩΡΙΣ σμίκρυνση, το ανεβάζει όπως είναι.
 function fileToDataURL(file){return new Promise((res,rej)=>{const rd=new FileReader();rd.onload=()=>res(rd.result);rd.onerror=rej;rd.readAsDataURL(file);});}
@@ -441,7 +449,7 @@ async function attachFile(id,input){
     }else{
       const dataUrl=await resize(f); await handleImage(id,dataUrl);         // εικόνα → έλεγχος ποιότητας
     }
-  }catch(e){toast("⚠️ Δεν ανέβηκε — δοκίμασε ξανά");const card=document.getElementById("c-"+id);if(card)card.classList.remove("busy");}
+  }catch(e){if(!(e&&e.resize))toast("⚠️ Δεν ανέβηκε — δοκίμασε ξανά");const card=document.getElementById("c-"+id);if(card)card.classList.remove("busy");}
 }
 // ΠΡΟΣΘΕΤΟ αρχείο (μεταφορικά / έξτρα απόδειξη) — append=true. ΧΩΡΙΣ έλεγχο ποιότητας/ποσού:
 // είναι συμπληρωματικό, το ποσό της χρέωσης το ξέρει η Viva. Δέχεται φωτο ή PDF.
@@ -457,7 +465,7 @@ async function attachExtra(id,input){
       body:JSON.stringify({w:W,t:T,chargeId:id,imageBase64:dataUrl,append:true})});
     const d=await r.json();if(!r.ok)throw new Error(d.error||"error");
     toast("✅ Προστέθηκε — τώρα η χρέωση έχει "+(d.files||2)+" αρχεία");await refresh();
-  }catch(e){toast("⚠️ Δεν ανέβηκε το πρόσθετο — δοκίμασε ξανά");if(card)card.classList.remove("busy");}
+  }catch(e){if(!(e&&e.resize))toast("⚠️ Δεν ανέβηκε το πρόσθετο — δοκίμασε ξανά");if(card)card.classList.remove("busy");}
 }
 // Επικόλληση screenshot από το πρόχειρο (print screen → clipboard). Το ανεβάζει σαν εικόνα.
 async function pasteShot(id){
@@ -474,7 +482,7 @@ async function pasteShot(id){
       body:JSON.stringify({w:W,t:T,chargeId:id,imageBase64:dataUrl})});
     const d=await r.json();if(!r.ok)throw new Error(d.error||"error");
     toast("✅ Το screenshot αποθηκεύτηκε!");await refresh();warnIfBad(d.receipt_check);
-  }catch(e){toast("Δεν έγινε η επικόλληση — δώσε άδεια «πρόχειρο» ή ανέβασέ το με το 📷");if(card)card.classList.remove("busy");}
+  }catch(e){if(!(e&&e.resize))toast("Δεν έγινε η επικόλληση — δώσε άδεια «πρόχειρο» ή ανέβασέ το με το 📷");if(card)card.classList.remove("busy");}
 }
 async function setProject(id,val){
   if(!val)return;
