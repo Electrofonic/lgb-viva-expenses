@@ -73,7 +73,10 @@ function dedupCharges(rows) {
     if (drop.project && !keep.project) keep.project = drop.project;
     if (String(keep.status) === "PENDING_CLEAR" && String(drop.status) !== "PENDING_CLEAR") keep.status = drop.status;
   }
-  return [...reals, ...keptOut];
+  // [25/9] Χρεώσεις που αποκαλύφθηκαν από τη διόρθωση αλλά ήταν ΠΡΙΝ από αυτήν: οι υπάλληλοι τις έχουν ήδη
+  //   δώσει σε χαρτί στον Κώστα → ΔΕΝ εμφανίζονται/δεν στέλνουν υπενθυμίσεις. Ό,τι νέο από εδώ και πέρα εμφανίζεται κανονικά.
+  const HIDDEN_BEFORE_FIX = new Set([1579,5152,5309,5537,6091,6586,7078,7081,7258,7553,8969,9577,12501,12824,12825,13486,14015,14569,14575,14971,15184]);
+  return [...reals, ...keptOut].filter((c) => !HIDDEN_BEFORE_FIX.has(Number(c.id)));
 }
 
 async function dsToken() {
