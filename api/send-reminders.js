@@ -40,7 +40,7 @@ function dedupCharges(rows) {
   const used = new Set(); const kept = [];
   for (const s of dups) {
     const k = Math.abs(+s.amount).toFixed(2);
-    const cand = (pool[k] || []).filter((r) => !used.has(r) && String(r.occurred_at || "") <= String(s.occurred_at || "")).sort((a, b) => String(b.occurred_at || "").localeCompare(String(a.occurred_at || "")));
+    const cand = (pool[k] || []).filter((r) => !used.has(r) && String(r.occurred_at || "") <= String(s.occurred_at || "") && (Date.parse(s.occurred_at) - Date.parse(r.occurred_at)) <= 7 * 864e5).sort((a, b) => String(b.occurred_at || "").localeCompare(String(a.occurred_at || "")));
     const r = cand[0];
     if (r) {
       used.add(r);
@@ -49,14 +49,30 @@ function dedupCharges(rows) {
       if (r.status === "PENDING_CLEAR") r.status = (r.has_receipt && r.project) ? "COMPLETE" : "MISSING_ALL";
     } else kept.push(s);
   }
-  const kept2 = new Map();
-  for (const s of kept) {
-    const k = Math.abs(+s.amount).toFixed(2); const ex = kept2.get(k);
-    if (!ex) { kept2.set(k, s); continue; }
-    if (s.has_receipt && !ex.has_receipt) { ex.has_receipt = true; ex.receipt_url = s.receipt_url; }
-    if (s.project && !ex.project) ex.project = s.project;
+  // 3) [fix 25/9] Ζευγάρωμα ΜΟΝΟ δέσμευσης↔εκκαθάρισης της ΙΔΙΑΣ αγοράς: ίδιο ποσό, εκκαθάριση έως 6 μέρες μετά,
+  //    1-προς-1, με προτίμηση ίδιου καταστήματος. (Παλιά ένωνε ΟΛΑ τα ίδια ποσά όλων των μηνών → έκρυβε
+  //    μηνιαίες συνδρομές Claude/Apple/OpenAI και αγορές ίδιου ποσού.)
+  const DAY = 864e5;
+  const mkey = (m) => String(m || "").replace(/^.*Viva Wallet Card\s*-?\s*/i, "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5);
+  const isAuthRow = (c) => /^AUTH-/.test(String(c.viva_tx_id || ""));
+  const orphanAuths = kept.filter(isAuthRow), orphanSettles = kept.filter((c) => !isAuthRow(c));
+  const paired = new Set(), keptOut = [...orphanAuths];
+  for (const s of orphanSettles) {
+    const k = Math.abs(+s.amount).toFixed(2), ts = Date.parse(s.occurred_at);
+    const cands = orphanAuths.filter((a) => { const d = ts - Date.parse(a.occurred_at); return !paired.has(a) && Math.abs(+a.amount).toFixed(2) === k && d >= -DAY && d <= 6 * DAY; })
+      .sort((a, b) => ((mkey(b.merchant) === mkey(s.merchant)) - (mkey(a.merchant) === mkey(s.merchant))) || (Date.parse(b.occurred_at) - Date.parse(a.occurred_at)));
+    const ex = cands[0];
+    if (!ex) { keptOut.push(s); continue; }
+    paired.add(ex);
+    // Επιζεί η εγγραφή που έχει ήδη δουλειά πάνω της (Elorus/απόδειξη/project) — ώστε να μη χαθεί ο δεσμός με το Elorus.
+    const score = (c) => (c.raw && c.raw.elorus_id ? 4 : 0) + (c.has_receipt ? 2 : 0) + (c.project ? 1 : 0);
+    let keep = ex, drop = s;
+    if (score(s) > score(ex)) { keep = s; drop = ex; keptOut[keptOut.indexOf(ex)] = s; }
+    if (drop.has_receipt && !keep.has_receipt) { keep.has_receipt = true; keep.receipt_url = drop.receipt_url; }
+    if (drop.project && !keep.project) keep.project = drop.project;
+    if (String(keep.status) === "PENDING_CLEAR" && String(drop.status) !== "PENDING_CLEAR") keep.status = drop.status;
   }
-  return [...reals, ...kept2.values()];
+  return [...reals, ...keptOut];
 }
 
 const BASE = "https://lgb-viva-expenses.vercel.app";
