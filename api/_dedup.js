@@ -50,7 +50,7 @@ function mergeInto(keep, other, opts = {}) {
   return m;
 }
 
-function dedupCharges(rows) {
+function dedupCharges(rows, opts = {}) {
   rows = (rows || []).filter((r) => r && String(r.status) !== "VOID_JULY");
   // 0) σωστή ώρα για τις cron-εγγραφές
   rows = rows.map((c) => ({ ...c, ...(isDup(c.merchant) ? { occurred_at: fixDsTime(c.occurred_at) } : {}), ...(HIDDEN_BEFORE_FIX.has(Number(c.id)) ? { _hidden: true } : {}) }));
@@ -122,7 +122,9 @@ function dedupCharges(rows) {
   }
 
   // Οι 21 κρυφές μένουν κρυφές ΠΑΝΤΑ (κάποιες έχουν ήδη περαστεί στο Elorus εκτός εφαρμογής → αλλιώς θα γράφονταν διπλά).
-  return [...realOut.values(), ...out.values(), ...finalSettles].filter((c) => !c._hidden).map((c) => { const { _hidden, ...rest } = c; return rest; });
+  const all = [...realOut.values(), ...out.values(), ...finalSettles];
+  if (opts.onlyHidden) return all.filter((c) => c._hidden); // για τον audit: ποιες ομάδες κρύβονται σκόπιμα
+  return all.filter((c) => !c._hidden).map((c) => { const { _hidden, ...rest } = c; return rest; });
 }
 
 module.exports = { dedupCharges, fixDsTime, athOffMin, HIDDEN_BEFORE_FIX, brandKey };

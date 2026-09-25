@@ -114,6 +114,7 @@ module.exports = async (req, res) => {
       //   Ταίριασμα: ίδιο ποσό, ±4 μέρες, με οποιαδήποτε ορατή χρέωση. Μία αναφορά ανά αγορά (δέσμευση+εκκαθάριση = 1).
       {
         const seenKeys = new Set();
+        const hiddenGroups = dedupCharges(raw || [], { onlyHidden: true });
         const cutoff = Date.now() - 30 * 60000; // αγνόησε τα τελευταία 30′ (ο sync δεν έχει προλάβει)
         for (const x of dsRecent) {
           if (String(x.walletId) !== w) continue;
@@ -128,6 +129,7 @@ module.exports = async (req, res) => {
           const inDb = (raw || []).filter((c) => String(c.viva_tx_id || "").replace(/^AUTH-/, "") === txid);
           if (inDb.some((c) => KNOWN_HIDDEN.has(Number(c.id)) || String(c.status) === "VOID_JULY")) continue;
           if ((raw || []).some((c) => KNOWN_HIDDEN.has(Number(c.id)) && near(c))) continue;
+          if (hiddenGroups.some(near)) continue; // ανήκει σε ομάδα που κρύψαμε σκόπιμα (π.χ. εκκαθάριση παλιάς δέσμευσης Uber)
           const day = athDate(new Date(t).toISOString());
           const key = k + "|" + day; if (seenKeys.has(key)) continue; seenKeys.add(key);
           const store = String(x.userDescription || x.counterPart || "").replace(/^.*Viva Wallet Card\s*-?\s*/i, "").trim();
