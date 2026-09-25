@@ -4,7 +4,7 @@
 //   ?action=run&type=INSTANT|EOD|WEEKLY|MONTH_END                                  → κανονικό τρέξιμο
 //        ΑΣΦΑΛΕΙΑ: αν EMAILS_LIVE !== "true" → ΤΙΠΟΤΑ δεν φεύγει σε υπάλληλο· ανακατευθύνεται στον CFO (REVIEW_EMAIL) με [TEST → …].
 //        Μόνο όταν οριστεί ρητά EMAILS_LIVE=true αρχίζουν να φεύγουν στους πραγματικούς παραλήπτες.
-const { sbSelect, sbInsert, sbUpdate, personToken, verifyToken } = require("./_viva.js");
+const { sbSelect, sbSelectAll, sbInsert, sbUpdate, personToken, verifyToken } = require("./_viva.js");
 
 // ── Ξεδίπλωμα διπλοεγγραφών Viva ────────────────────────────────────────────
 // Η Viva γράφει την ίδια αγορά έως και 3 φορές (webhook + δέσμευση + εκκαθάριση).
@@ -407,8 +407,12 @@ module.exports = async (req, res) => {
         else type = "EOD";                                    // καθημερινό συγκεντρωτικό
       }
       const emails = await readEmails();
-      const ym = new Date().toISOString().slice(0, 7);
-      const rows = await sbSelect("charges", `select=*&order=occurred_at.desc&limit=1000`);
+      // [25/9] Μήνας σε ώρα Ελλάδας. Οι εκκρεμότητες του ΠΡΟΗΓΟΥΜΕΝΟΥ μήνα συνεχίζουν να ζητούνται μετά την αλλαγή μήνα
+      // (πριν χάνονταν την 1η του μήνα). Ισχύει από Σεπτέμβριο 2026 και μετά — τα παλαιότερα δεν ξαναζωντανεύουν.
+      const athYM = (d) => new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Athens" }).format(new Date(d)).slice(0, 7);
+      const ym = athYM(Date.now());
+      const prevYm = (() => { const [y, m] = ym.split("-").map(Number); return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`; })();
+      const rows = await sbSelectAll("charges", `select=*&order=occurred_at.desc,id.desc`);
       // ΣΕΙΡΑ ΠΟΥ ΜΕΤΡΑΕΙ: πρώτα ομαδοποίηση ανά κάρτα → μετά ξεδίπλωμα διπλοεγγραφών
       // → και ΜΟΝΟ ΤΟΤΕ φιλτράρισμα μήνα/έναρξης/ολοκληρωμένων. Αν φιλτράρουμε πριν το
       // dedup, οι εκκαθαρίσεις παλιών αγορών μοιάζουν με νέες εκκρεμότητες.
@@ -421,7 +425,7 @@ module.exports = async (req, res) => {
       for (const w of Object.keys(rawByW)) {
         const startD = startFor(w); // πιλοτικός → 16/7, αλλιώς → 1/8 (Ιουλίου «σβήνουν»)
         for (const c of dedupCharges(rawByW[w])) {
-          if (String(c.occurred_at || "").slice(0, 7) !== ym) continue;
+          { const cym = athYM(c.occurred_at); if (cym !== ym && !(cym === prevYm && cym >= "2026-09")) continue; }
           if (String(c.occurred_at || "").slice(0, 10) < startD) continue; // όχι πριν την έναρξη του ατόμου
           const done = (c.has_receipt && c.project) || c.status === "APPROVED_LOSS" || c.status === "INTERNAL";
           if (done) continue;

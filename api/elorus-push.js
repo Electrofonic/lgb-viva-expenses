@@ -3,7 +3,7 @@
 //   POST { w, t, chargeId }         → push ΜΙΑΣ χρέωσης (owner-authenticated με προσωπικό token)
 //   GET/POST ?all=1  (Vercel cron)  → push ΟΛΩΝ των eligible που δεν έχουν σταλεί ακόμα
 // Idempotent: αποθηκεύει το elorus_id στο charges.raw → δεν ξανακαταχωρεί.
-const { sbSelect, sbUpdate, verifyToken, wallets } = require("./_viva.js");
+const { sbSelect, sbSelectAll, sbUpdate, verifyToken, wallets } = require("./_viva.js");
 
 const BASE = "https://api.elorus.com/v1.1";
 const ORG = process.env.ELORUS_ORG_ID || "2802338946946696842";
@@ -692,7 +692,7 @@ module.exports = async (req, res) => {
         const who = info.name || wid;
         if (!perPerson[who]) perPerson[who] = { who, count: 0, amount: 0, nudges: 0, pilot: PILOT_WALLETS.has(String(wid)) };
         const startD = startForWallet(wid); // πιλοτικός → 16/7, αλλιώς → 1/8 (Ιουλίου «σβήνουν»)
-        const raw = await sbSelect("charges", `wallet_id=eq.${wid}&order=occurred_at.desc&limit=1000`);
+        const raw = await sbSelectAll("charges", `wallet_id=eq.${wid}&order=occurred_at.desc,id.desc`);
         for (const c of dedupCharges(raw || [])) {
           if (athDate(c.occurred_at) < startD) continue;
           const amt = Math.abs(+c.amount).toFixed(2);
@@ -806,7 +806,7 @@ module.exports = async (req, res) => {
       const mem = (Array.isArray(wsA) ? wsA : []).filter((x) => x.hasIssuedCard && !x.isPrimary && x.friendlyName && x.friendlyName !== "ακυρο" && !EXCL.has(String(x.walletId))).map((x) => String(x.walletId));
       let completed = 0, pushed = 0;
       for (const wid of mem) {
-        const raw = await sbSelect("charges", `wallet_id=eq.${wid}&order=occurred_at.desc&limit=1000`);
+        const raw = await sbSelectAll("charges", `wallet_id=eq.${wid}&order=occurred_at.desc,id.desc`);
         for (const c of dedupCharges(raw || [])) {
           if (!c.has_receipt || !c.project) continue;
           completed++;
@@ -847,7 +847,7 @@ module.exports = async (req, res) => {
       const members = (Array.isArray(ws) ? ws : []).filter((x) => x.hasIssuedCard && !x.isPrimary && x.friendlyName && x.friendlyName !== "ακυρο" && !EXCLUDED.has(String(x.walletId))).map((x) => String(x.walletId));
       const out = []; let scanned = 0;
       for (const wid of members) {
-        const raw = await sbSelect("charges", `wallet_id=eq.${wid}&order=occurred_at.desc&limit=1000`);
+        const raw = await sbSelectAll("charges", `wallet_id=eq.${wid}&order=occurred_at.desc,id.desc`);
         const ded = dedupCharges(raw || []);
         for (const c of ded) {
           if (!c.has_receipt || !c.project) continue;

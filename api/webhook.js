@@ -37,6 +37,7 @@ module.exports = async (req, res) => {
     };
     const r = await sbInsert("charges", charge, "viva_tx_id");
     console.log("charge stored", charge.viva_tx_id, r);
+    if (r && r.ok === false) return res.status(500).json({ retry: true, status: r.status }); // [25/9] να ξαναστείλει η Viva
     return res.status(200).json({ ok: true });
   } catch (err) {
     console.error("webhook error", err);

@@ -2,7 +2,7 @@
 // (authorizations = τα χτυπήματα) και τη συγκρίνει με ό,τι ΔΕΙΧΝΕΙ η πλατφόρμα (μετά το dedup).
 // Πιάνει: διπλές χρεώσεις/συνδρομές, λάθος ποσά, φαντάσματα, λάθος/μελλοντικές ώρες.
 // GET /api/audit  → { ok, generatedAt, totalIssues, people:[{wallet,name,ours,viva,issues:[...]}] }
-const { wallets, sbSelect } = require("./_viva.js");
+const { wallets, sbSelect, sbSelectAll } = require("./_viva.js");
 
 const START_DATE = "2026-07-16";
 const EXCLUDED = new Set(["901067108914"]);
@@ -93,6 +93,18 @@ async function dsPage(token, page) {
   return (await r.json()).data || [];
 }
 
+// [25/9] Κινήσεις Viva από συγκεκριμένη ημερομηνία (όλες οι σελίδες) — για τον έλεγχο «λείπει από την εφαρμογή».
+async function dsSince(token, since) {
+  const out = [];
+  for (let p = 1; p <= 10; p++) {
+    const r = await fetch(`https://api.vivapayments.com/dataservices/v2/accounttransactions/Search?dateFrom=${since}&dateTo=2030-01-01T00:00:00&page=${p}&pageSize=500`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: "{}" });
+    if (!r.ok) throw new Error(`DS ${r.status}`);
+    const pg = (await r.json()).data || []; out.push(...pg); if (pg.length < 500) break;
+  }
+  return out;
+}
+const KNOWN_HIDDEN = new Set([1579,5152,5309,5537,6091,6586,7078,7081,7258,7553,8969,9577,12501,12824,12825,13486,14015,14569,14575,14971,15184]);
+
 module.exports = async (req, res) => {
   try {
     const ws = await wallets();
@@ -116,12 +128,16 @@ module.exports = async (req, res) => {
       (vivaTimes[w] = vivaTimes[w] || []).push({ amt: k, t });
     }
 
+    // 1β) [25/9] Όλες οι αγορές/δεσμεύσεις των τελευταίων 21 ημερών — για τον έλεγχο MISSING
+    const MISS_DAYS = Math.min(60, Math.max(3, Number((req.query || {}).days) || 21));
+    const dsRecent = await dsSince(token, new Date(Date.now() - MISS_DAYS * 864e5).toISOString().slice(0, 19));
+
     // 2) ΤΙ ΔΕΙΧΝΟΥΜΕ: οι χρεώσεις μας μετά το dedup, ανά κάρτα
     const now = Date.now();
     const people = [];
     let totalIssues = 0;
     for (const w of members) {
-      const raw = await sbSelect("charges", `wallet_id=eq.${w}&order=occurred_at.desc&limit=1000`);
+      const raw = await sbSelectAll("charges", `wallet_id=eq.${w}&order=occurred_at.desc,id.desc`);
       const ours = dedupCharges(raw || []).filter((c) => athDate(c.occurred_at) >= START_DATE);
       const issues = [];
       const ourAmts = {};
@@ -144,6 +160,31 @@ module.exports = async (req, res) => {
           const best = Math.min(...cands.map((v) => Math.abs(new Date(v.t).getTime() - oc))) / 60000;
           const dev = Math.min(best, Math.abs(best - 60), Math.abs(best - 120), Math.abs(best - 180));
           if (dev > 20) issues.push({ type: "WRONG_TIME", amount: +k, detail: `Ώρα αποκλίνει ${Math.round(best)}' από τη Viva (πέρα από ζώνη)` });
+        }
+      }
+      // [25/9] MISSING: αγορά που ΥΠΑΡΧΕΙ στη Viva αλλά ΔΕΝ φαίνεται στον υπάλληλο (ούτε σε βάση, ούτε κρυμμένη).
+      //   Ταίριασμα: ίδιο ποσό, ±4 μέρες, με οποιαδήποτε ορατή χρέωση. Μία αναφορά ανά αγορά (δέσμευση+εκκαθάριση = 1).
+      {
+        const seenKeys = new Set();
+        const cutoff = Date.now() - 30 * 60000; // αγνόησε τα τελευταία 30′ (ο sync δεν έχει προλάβει)
+        for (const x of dsRecent) {
+          if (String(x.walletId) !== w) continue;
+          const a = Number(x.amount); if (!(a < 0)) continue;
+          const isBuy = x.subTypeId === 100 || x.subTypeId === 104 || x.isAuthorization || x.subTypeId === 101;
+          if (!isBuy) continue;
+          const t = Date.parse(fixDsTime(x.created)); if (!(t < cutoff)) continue;
+          const k = Math.abs(a).toFixed(2);
+          const near = (c) => Math.abs(+c.amount).toFixed(2) === k && Math.abs(Date.parse(c.occurred_at) - t) <= 4 * 864e5;
+          if (ours.some(near)) continue;
+          const txid = String(x.accountTransactionId || "");
+          const inDb = (raw || []).filter((c) => String(c.viva_tx_id || "").replace(/^AUTH-/, "") === txid);
+          if (inDb.some((c) => KNOWN_HIDDEN.has(Number(c.id)) || String(c.status) === "VOID_JULY")) continue;
+          if ((raw || []).some((c) => KNOWN_HIDDEN.has(Number(c.id)) && near(c))) continue;
+          const day = athDate(new Date(t).toISOString());
+          const key = k + "|" + day; if (seenKeys.has(key)) continue; seenKeys.add(key);
+          const store = String(x.userDescription || x.counterPart || "").replace(/^.*Viva Wallet Card\s*-?\s*/i, "").trim();
+          issues.push({ type: inDb.length ? "MISSING_HIDDEN" : "MISSING_NOT_SYNCED", amount: +k, date: day, store, vivaTx: txid,
+            detail: inDb.length ? `${day} ${store} ${k}€: υπάρχει στη Viva ΚΑΙ στη βάση αλλά ΔΕΝ φαίνεται στον υπάλληλο (dedup)` : `${day} ${store} ${k}€: υπάρχει στη Viva αλλά ΔΕΝ έχει έρθει στην εφαρμογή` });
         }
       }
       if (issues.length) totalIssues += issues.length;

@@ -77,6 +77,23 @@ async function sbSelect(table, query = "") {
   return r.json();
 }
 
+// [25/9] Φέρνει ΟΛΕΣ τις γραμμές σε σελίδες των 1000 (το Supabase κόβει στις 1000 σιωπηλά).
+async function sbSelectAll(table, query = "") {
+  const c = sb();
+  if (!c) return [];
+  const out = [];
+  for (let off = 0; off < 50000; off += 1000) {
+    const r = await fetch(`${c.url}/rest/v1/${table}?${query}&limit=1000&offset=${off}`, {
+      headers: { apikey: c.key, Authorization: `Bearer ${c.key}` },
+    });
+    if (!r.ok) throw new Error(`sb ${table} ${r.status}`);
+    const page = await r.json();
+    out.push(...page);
+    if (page.length < 1000) break;
+  }
+  return out;
+}
+
 // Ενημέρωση γραμμής (π.χ. ορισμός project από τον CFO). filter π.χ. "id=eq.42"
 async function sbUpdate(table, filter, patch) {
   const c = sb();
@@ -135,7 +152,7 @@ async function sbUploadReceipt(path, bytes, contentType) {
   return { ok: true, url: `${c.url}/storage/v1/object/public/receipts/${path}` };
 }
 
-module.exports = {
+module.exports = { sbSelectAll,
   vivaToken, wallets, webhookKey, sbInsert, sbSelect, sbUpdate,
   personToken, verifyToken, sbUploadReceipt,
 };

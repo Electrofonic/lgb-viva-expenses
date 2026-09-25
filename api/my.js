@@ -1,7 +1,7 @@
 // Τροφοδοτεί την προσωπική σελίδα κάθε υπαλλήλου (me.html).
 //  GET ?w=<walletId>&t=<token>  → επιστρέφει το όνομα + τις χρεώσεις ΜΟΝΟ αυτού του ατόμου (τρέχων μήνας)
 //  GET ?links=1                 → (για CFO) όλα τα προσωπικά links για διανομή
-const { wallets, sbSelect, personToken, verifyToken } = require("./_viva.js");
+const { wallets, sbSelect, sbSelectAll, personToken, verifyToken } = require("./_viva.js");
 
 // Έναρξη καταγραφής — δείχνουμε ΜΟΝΟ χρεώσεις από αυτή τη μέρα κι έπειτα.
 // (Οι παλιές του Ιουλίου δεν θα τακτοποιηθούν — καθαρή εικόνα από σήμερα.)
@@ -187,7 +187,7 @@ module.exports = async (req, res) => {
     const card = m ? m[2] : "----";
 
     const ym = new Date().toISOString().slice(0, 7); // τρέχων μήνας (προεπιλογή)
-    const rowsRaw = await sbSelect("charges", `wallet_id=eq.${w}&order=occurred_at.desc&limit=1000`);
+    const rowsRaw = await sbSelectAll("charges", `wallet_id=eq.${w}&order=occurred_at.desc,id.desc`);
     const rows = dedupCharges(rowsRaw || [])
       .filter((c) => String(c.occurred_at || "") >= START_DATE); // μόνο από σήμερα κι έπειτα
     // Επιστρέφουμε ΟΛΟΥΣ τους μήνες — η σελίδα κάνει πλοήγηση μπρος-πίσω και φιλτράρει.

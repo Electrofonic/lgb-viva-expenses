@@ -18,8 +18,8 @@ async function dsToken() {
   return (await r.json()).access_token;
 }
 
-async function dsPage(token, page) {
-  const url = `https://api.vivapayments.com/dataservices/v2/accounttransactions/Search?dateFrom=2026-01-01T00:00:00&dateTo=2030-01-01T00:00:00&page=${page}&pageSize=500`;
+async function dsPage(token, page, since) {
+  const url = `https://api.vivapayments.com/dataservices/v2/accounttransactions/Search?dateFrom=${since}&dateTo=2030-01-01T00:00:00&page=${page}&pageSize=500`;
   const r = await fetch(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -39,13 +39,16 @@ module.exports = async (req, res) => {
         .map((w) => String(w.walletId))
     );
     const token = await dsToken();
-    const rows = await dsPage(token, 1); // νεότερες 500 (καλύπτουν ~2+ εβδομάδες)
+    // [25/9] Τελευταίες 10 μέρες, ΟΛΕΣ οι σελίδες. Πριν: μόνο σελίδα 1 + μόνο τρέχων μήνας → χρεώσεις των
+    // τελευταίων ημερών του μήνα που έφταναν αργά (ή μετά από διακοπή) χάνονταν για πάντα. Ασφαλές: ignore-duplicates.
+    const since = new Date(Date.now() - 10 * 864e5).toISOString().slice(0, 19);
+    const rows = [];
+    for (let p = 1; p <= 10; p++) { const pg = await dsPage(token, p, since); rows.push(...pg); if (pg.length < 500) break; }
 
     const ym = new Date().toISOString().slice(0, 7); // τρέχων μήνας YYYY-MM
     const batch = [];
     for (const x of rows) {
       if (!members.has(String(x.walletId))) continue;
-      if (String(x.created || "").slice(0, 7) !== ym) continue;
       const amt = Number(x.amount);
       const settle = (x.subTypeId === 100 || x.subTypeId === 104) && amt < 0;
       const auth = (x.isAuthorization || x.subTypeId === 101) && amt < 0;
