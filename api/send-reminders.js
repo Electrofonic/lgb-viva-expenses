@@ -15,68 +15,8 @@ function athOffMin(d) {
   return (Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second) - d.getTime()) / 60000;
 }
 function fixDsTime(iso) { try { const w = new Date(iso); return new Date(w.getTime() - athOffMin(w) * 60000).toISOString(); } catch (e) { return iso; } }
-function dedupCharges(rows) {
-  rows = (rows || []).filter((r) => String(r && r.status) !== "VOID_JULY"); // μηδενισμένες Ιουλίου → εκτός
-  const norm = (id) => String(id || "").replace(/^AUTH-/, "");
-  const isDup = (m) => /Viva Wallet Card/i.test(m || "");
-  rows = (rows || []).map((c) => isDup(c.merchant) ? { ...c, occurred_at: fixDsTime(c.occurred_at) } : { ...c });
-  const byId = new Map();
-  for (const c of rows) {
-    const k = norm(c.viva_tx_id); const ex = byId.get(k);
-    if (!ex) { byId.set(k, { ...c }); continue; }
-    const m = { ...ex };
-    if (isDup(m.merchant) && !isDup(c.merchant)) m.merchant = c.merchant;
-    if (String(c.occurred_at || "") < String(m.occurred_at || "")) m.occurred_at = c.occurred_at;
-    if (c.has_receipt) { m.has_receipt = true; m.receipt_url = c.receipt_url || m.receipt_url; }
-    if (c.project) m.project = c.project;
-    if (c.raw && (c.raw.rem || c.raw.invoice)) m.raw = Object.assign({}, m.raw || {}, c.raw);
-    if (String(c.status) !== "PENDING_CLEAR") m.status = c.status;
-    byId.set(k, m);
-  }
-  const list = [...byId.values()];
-  const reals = list.filter((c) => !isDup(c.merchant));
-  const dups = list.filter((c) => isDup(c.merchant)).sort((a, b) => String(a.occurred_at || "").localeCompare(String(b.occurred_at || "")));
-  const pool = {}; for (const r of reals) { const k = Math.abs(+r.amount).toFixed(2); (pool[k] = pool[k] || []).push(r); }
-  const used = new Set(); const kept = [];
-  for (const s of dups) {
-    const k = Math.abs(+s.amount).toFixed(2);
-    const cand = (pool[k] || []).filter((r) => !used.has(r) && String(r.occurred_at || "") <= String(s.occurred_at || "") && (Date.parse(s.occurred_at) - Date.parse(r.occurred_at)) <= 7 * 864e5).sort((a, b) => String(b.occurred_at || "").localeCompare(String(a.occurred_at || "")));
-    const r = cand[0];
-    if (r) {
-      used.add(r);
-      if (s.has_receipt && !r.has_receipt) { r.has_receipt = true; r.receipt_url = s.receipt_url; }
-      if (s.project && !r.project) r.project = s.project;
-      if (r.status === "PENDING_CLEAR") r.status = (r.has_receipt && r.project) ? "COMPLETE" : "MISSING_ALL";
-    } else kept.push(s);
-  }
-  // 3) [fix 25/9] Ζευγάρωμα ΜΟΝΟ δέσμευσης↔εκκαθάρισης της ΙΔΙΑΣ αγοράς: ίδιο ποσό, εκκαθάριση έως 6 μέρες μετά,
-  //    1-προς-1, με προτίμηση ίδιου καταστήματος. (Παλιά ένωνε ΟΛΑ τα ίδια ποσά όλων των μηνών → έκρυβε
-  //    μηνιαίες συνδρομές Claude/Apple/OpenAI και αγορές ίδιου ποσού.)
-  const DAY = 864e5;
-  const mkey = (m) => String(m || "").replace(/^.*Viva Wallet Card\s*-?\s*/i, "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5);
-  const isAuthRow = (c) => /^AUTH-/.test(String(c.viva_tx_id || ""));
-  const orphanAuths = kept.filter(isAuthRow), orphanSettles = kept.filter((c) => !isAuthRow(c));
-  const paired = new Set(), keptOut = [...orphanAuths];
-  for (const s of orphanSettles) {
-    const k = Math.abs(+s.amount).toFixed(2), ts = Date.parse(s.occurred_at);
-    const cands = orphanAuths.filter((a) => { const d = ts - Date.parse(a.occurred_at); return !paired.has(a) && Math.abs(+a.amount).toFixed(2) === k && d >= -DAY && d <= 6 * DAY; })
-      .sort((a, b) => ((mkey(b.merchant) === mkey(s.merchant)) - (mkey(a.merchant) === mkey(s.merchant))) || (Date.parse(b.occurred_at) - Date.parse(a.occurred_at)));
-    const ex = cands[0];
-    if (!ex) { keptOut.push(s); continue; }
-    paired.add(ex);
-    // Επιζεί η εγγραφή που έχει ήδη δουλειά πάνω της (Elorus/απόδειξη/project) — ώστε να μη χαθεί ο δεσμός με το Elorus.
-    const score = (c) => (c.raw && c.raw.elorus_id ? 4 : 0) + (c.has_receipt ? 2 : 0) + (c.project ? 1 : 0);
-    let keep = ex, drop = s;
-    if (score(s) > score(ex)) { keep = s; drop = ex; keptOut[keptOut.indexOf(ex)] = s; }
-    if (drop.has_receipt && !keep.has_receipt) { keep.has_receipt = true; keep.receipt_url = drop.receipt_url; }
-    if (drop.project && !keep.project) keep.project = drop.project;
-    if (String(keep.status) === "PENDING_CLEAR" && String(drop.status) !== "PENDING_CLEAR") keep.status = drop.status;
-  }
-  // [25/9] Χρεώσεις που αποκαλύφθηκαν από τη διόρθωση αλλά ήταν ΠΡΙΝ από αυτήν: οι υπάλληλοι τις έχουν ήδη
-  //   δώσει σε χαρτί στον Κώστα → ΔΕΝ εμφανίζονται/δεν στέλνουν υπενθυμίσεις. Ό,τι νέο από εδώ και πέρα εμφανίζεται κανονικά.
-  const HIDDEN_BEFORE_FIX = new Set([1579,5152,5309,5537,6091,6586,7078,7081,7258,7553,8969,9577,12501,12824,12825,13486,14015,14569,14575,14971,15184]);
-  return [...reals, ...keptOut].filter((c) => !HIDDEN_BEFORE_FIX.has(Number(c.id)));
-}
+// [25/9] Ενιαίο ξεδίπλωμα για όλη την εφαρμογή → βλ. api/_dedup.js
+const { dedupCharges } = require("./_dedup.js");
 
 const BASE = "https://lgb-viva-expenses.vercel.app";
 const REVIEW = process.env.REVIEW_EMAIL || "cs@viralpassion.gr";
@@ -120,9 +60,11 @@ function dueForNudge(c, now) {
   const rem = (c.raw && c.raw.rem) || { n: 0, last: null };
   const sinceCharge = now - new Date(c.occurred_at).getTime();
   const sinceLast = rem.last ? now - new Date(rem.last).getTime() : Infinity;
+  // [25/9] ΟΡΙΟ: το πολύ 3 ατομικές υπενθυμίσεις ανά χρέωση (30′ → +1 ώρα → +1 μέρα). Μετά ΜΟΝΟ στα συγκεντρωτικά.
   if (!rem.n) return sinceCharge >= 30 * MIN;
   if (rem.n === 1) return sinceLast >= 60 * MIN;
-  return sinceLast >= 20 * 60 * MIN;
+  if (rem.n === 2) return sinceLast >= 20 * 60 * MIN;
+  return false;
 }
 async function markNudged(c, now) {
   const rem = (c.raw && c.raw.rem) || { n: 0, last: null };
@@ -181,8 +123,7 @@ function compose(firstName, walletId, card, miss, type) {
       ${growCell("Σύνολο μήνα", miss.length, total, true)}
     </tr></table></div>`;
   const rows = miss.map((c) => {
-    const d = new Date(c.occurred_at);
-    const dd = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    const dd = new Intl.DateTimeFormat("el-GR", { timeZone: "Europe/Athens", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(c.occurred_at)).replace(",", "");
     const w = !c.has_receipt && !c.project ? "λείπουν όλα" : !c.has_receipt ? "χωρίς απόδειξη" : "χωρίς project";
     return `<tr><td style="padding:6px 10px">${dd}</td><td style="padding:6px 10px"><b>${c.merchant || ""}</b></td><td style="padding:6px 10px;text-align:right">${fmt(Math.abs(+c.amount))}</td><td style="padding:6px 10px;color:#c0392b">${w}</td></tr>`;
   }).join("");
@@ -411,6 +352,8 @@ module.exports = async (req, res) => {
       // (πριν χάνονταν την 1η του μήνα). Ισχύει από Σεπτέμβριο 2026 και μετά — τα παλαιότερα δεν ξαναζωντανεύουν.
       const athYM = (d) => new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Athens" }).format(new Date(d)).slice(0, 7);
       const ym = athYM(Date.now());
+      const athDom = Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Athens", day: "numeric" }).format(new Date()));
+      const athDow = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Athens", weekday: "short" }).format(new Date()); // Mon..Sun
       const prevYm = (() => { const [y, m] = ym.split("-").map(Number); return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`; })();
       const rows = await sbSelectAll("charges", `select=*&order=occurred_at.desc,id.desc`);
       // ΣΕΙΡΑ ΠΟΥ ΜΕΤΡΑΕΙ: πρώτα ομαδοποίηση ανά κάρτα → μετά ξεδίπλωμα διπλοεγγραφών
@@ -425,9 +368,10 @@ module.exports = async (req, res) => {
       for (const w of Object.keys(rawByW)) {
         const startD = startFor(w); // πιλοτικός → 16/7, αλλιώς → 1/8 (Ιουλίου «σβήνουν»)
         for (const c of dedupCharges(rawByW[w])) {
-          { const cym = athYM(c.occurred_at); if (cym !== ym && !(cym === prevYm && cym >= "2026-09")) continue; }
+          // [25/9] Προηγούμενος μήνας: ζητείται ΜΟΝΟ έως τη 10η του επόμενου (μετά σταματούν τα email — πάει στον Κώστα).
+          { const cym = athYM(c.occurred_at); if (cym !== ym && !(cym === prevYm && cym >= "2026-09" && athDom <= 10)) continue; }
           if (String(c.occurred_at || "").slice(0, 10) < startD) continue; // όχι πριν την έναρξη του ατόμου
-          const done = (c.has_receipt && c.project) || c.status === "APPROVED_LOSS" || c.status === "INTERNAL";
+          const done = (c.has_receipt && c.project) || c.status === "APPROVED_LOSS" || c.approved_loss || c.status === "INTERNAL";
           if (done) continue;
           (byW[w] = byW[w] || []).push(c);
         }
@@ -442,18 +386,28 @@ module.exports = async (req, res) => {
         if (type === "INSTANT") {
           charges = charges.filter((c) => dueForNudge(c, now));
           if (!charges.length) { results.push({ person: info.name, skipped: "δεν ήρθε η ώρα" }); continue; }
+          // [25/9] ΟΧΙ βομβαρδισμός: αν ΔΕΝ υπάρχει καινούργια χρέωση (όλες έχουν ήδη πάρει ≥1 υπενθύμιση)
+          // και ο υπάλληλος πήρε email τις τελευταίες 3 ώρες → περιμένουμε.
+          const lastAny = Math.max(0, ...byW[w].map((c) => { const r = c.raw && c.raw.rem; return r && r.last ? Date.parse(r.last) : 0; }));
+          const allSeen = charges.every((c) => ((c.raw && c.raw.rem && c.raw.rem.n) || 0) >= 2); // 1η & 2η δεν καθυστερούν
+          if (allSeen && now - lastAny < 3 * 3600e3) { results.push({ person: info.name, skipped: "πήρε email πριν <3 ώρες" }); continue; }
         }
+        // [25/9] Συγκεντρωτικό στον υπάλληλο ΜΟΝΟ Τρίτη, Παρασκευή, 10η του μήνα (τελευταία ευκαιρία για τον προηγούμενο) & τέλος μήνα.
+        if (type === "EOD" && !(athDow === "Tue" || athDom === 10)) { results.push({ person: info.name, skipped: "όχι μέρα συγκεντρωτικού" }); continue; }
 
         // Πριν την 1/8: στέλνουμε ΜΟΝΟ στους PILOT. Οι υπόλοιποι ΑΓΝΟΟΥΝΤΑΙ τελείως —
         // κανένα email, ούτε στον υπάλληλο ούτε στον CFO.
         const goesLive = LIVE || PILOT.includes(String(w));
         if (!goesLive) { results.push({ person: info.name, skipped: "εκτός πιλοτικού — καμία αποστολή" }); continue; }
         const c = compose(info.firstName || info.name || "", w, info.card || "", charges, type);
+        let anyOk = false;
         for (const to of (info.emails || [])) {
           const r = await resend(to, c.subject, c.html, c.text);
+          if (r.ok) anyOk = true;
           results.push({ person: info.name, to, live: true, charges: charges.length, ok: r.ok, err: r.error });
         }
-        if (type === "INSTANT") for (const ch of charges) await markNudged(ch, now);
+        // [25/9] μετράμε υπενθύμιση ΜΟΝΟ αν όντως έφυγε email (αλλιώς θα «καίγονταν» οι 3 χωρίς να φτάσει τίποτα)
+        if (type === "INSTANT" && anyOk) for (const ch of charges) await markNudged(ch, now);
       }
       // Στο ημερήσιο τρέξιμο (όχι στις γρήγορες υπενθυμίσεις) στέλνουμε ΚΑΙ την αναφορά στον Κώστα.
       // Καθημερινά: μόνο αν κάτι θέλει τον Κώστα. Παρασκευή/τέλος μήνα: + εικόνα εκκρεμοτήτων.

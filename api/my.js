@@ -81,70 +81,8 @@ function athOffMin(d) {
 function fixDsTime(iso) { try { const w = new Date(iso); return new Date(w.getTime() - athOffMin(w) * 60000).toISOString(); } catch (e) { return iso; } }
 
 // Καθαρισμός διπλοεγγραφών + διόρθωση ωρών.
-function dedupCharges(rows) {
-  rows = (rows || []).filter((r) => String(r && r.status) !== "VOID_JULY"); // μηδενισμένες Ιουλίου → εκτός
-  const norm = (id) => String(id || "").replace(/^AUTH-/, "");
-  const isDup = (m) => /Viva Wallet Card/i.test(m || "");   // εγγραφή από cron (δέσμευση/εκκαθάριση)
-  // 0) Διόρθωσε τις ώρες των cron-εγγραφών
-  rows = (rows || []).map((c) => isDup(c.merchant) ? { ...c, occurred_at: fixDsTime(c.occurred_at) } : { ...c });
-  // 1) Ένωσε την ΙΔΙΑ συναλλαγή (webhook + cron, ίδιο id χωρίς "AUTH-"). Κράτα πραγματικό μαγαζί, νωρίτερη ώρα, απόδειξη/project.
-  const byId = new Map();
-  for (const c of rows) {
-    const k = norm(c.viva_tx_id); const ex = byId.get(k);
-    if (!ex) { byId.set(k, { ...c }); continue; }
-    const m = { ...ex };
-    if (isDup(m.merchant) && !isDup(c.merchant)) m.merchant = c.merchant;
-    if (String(c.occurred_at || "") < String(m.occurred_at || "")) m.occurred_at = c.occurred_at;
-    if (c.has_receipt) { m.has_receipt = true; m.receipt_url = c.receipt_url || m.receipt_url; }
-    if (c.project) m.project = c.project;
-    if (String(c.status) !== "PENDING_CLEAR") m.status = c.status;
-    byId.set(k, m);
-  }
-  const list = [...byId.values()];
-  const reals = list.filter((c) => !isDup(c.merchant));
-  const dups = list.filter((c) => isDup(c.merchant)).sort((a, b) => String(a.occurred_at || "").localeCompare(String(b.occurred_at || "")));
-  // 2) Ρίξε κάθε cron-εκκαθάριση πάνω σε ΠΡΟΓΕΝΕΣΤΕΡΗ πραγματική εγγραφή ίδιου ποσού (=ίδια αγορά).
-  const pool = {}; for (const r of reals) { const k = Math.abs(+r.amount).toFixed(2); (pool[k] = pool[k] || []).push(r); }
-  const used = new Set(); const kept = [];
-  for (const s of dups) {
-    const k = Math.abs(+s.amount).toFixed(2);
-    const cand = (pool[k] || []).filter((r) => !used.has(r) && String(r.occurred_at || "") <= String(s.occurred_at || "") && (Date.parse(s.occurred_at) - Date.parse(r.occurred_at)) <= 7 * 864e5).sort((a, b) => String(b.occurred_at || "").localeCompare(String(a.occurred_at || "")));
-    const r = cand[0];
-    if (r) {
-      used.add(r);
-      if (s.has_receipt && !r.has_receipt) { r.has_receipt = true; r.receipt_url = s.receipt_url; }
-      if (s.project && !r.project) r.project = s.project;
-      if (r.status === "PENDING_CLEAR") r.status = (r.has_receipt && r.project) ? "COMPLETE" : "MISSING_ALL";
-    } else kept.push(s);
-  }
-  // 3) [fix 25/9] Ζευγάρωμα ΜΟΝΟ δέσμευσης↔εκκαθάρισης της ΙΔΙΑΣ αγοράς: ίδιο ποσό, εκκαθάριση έως 6 μέρες μετά,
-  //    1-προς-1, με προτίμηση ίδιου καταστήματος. (Παλιά ένωνε ΟΛΑ τα ίδια ποσά όλων των μηνών → έκρυβε
-  //    μηνιαίες συνδρομές Claude/Apple/OpenAI και αγορές ίδιου ποσού.)
-  const DAY = 864e5;
-  const mkey = (m) => String(m || "").replace(/^.*Viva Wallet Card\s*-?\s*/i, "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5);
-  const isAuthRow = (c) => /^AUTH-/.test(String(c.viva_tx_id || ""));
-  const orphanAuths = kept.filter(isAuthRow), orphanSettles = kept.filter((c) => !isAuthRow(c));
-  const paired = new Set(), keptOut = [...orphanAuths];
-  for (const s of orphanSettles) {
-    const k = Math.abs(+s.amount).toFixed(2), ts = Date.parse(s.occurred_at);
-    const cands = orphanAuths.filter((a) => { const d = ts - Date.parse(a.occurred_at); return !paired.has(a) && Math.abs(+a.amount).toFixed(2) === k && d >= -DAY && d <= 6 * DAY; })
-      .sort((a, b) => ((mkey(b.merchant) === mkey(s.merchant)) - (mkey(a.merchant) === mkey(s.merchant))) || (Date.parse(b.occurred_at) - Date.parse(a.occurred_at)));
-    const ex = cands[0];
-    if (!ex) { keptOut.push(s); continue; }
-    paired.add(ex);
-    // Επιζεί η εγγραφή που έχει ήδη δουλειά πάνω της (Elorus/απόδειξη/project) — ώστε να μη χαθεί ο δεσμός με το Elorus.
-    const score = (c) => (c.raw && c.raw.elorus_id ? 4 : 0) + (c.has_receipt ? 2 : 0) + (c.project ? 1 : 0);
-    let keep = ex, drop = s;
-    if (score(s) > score(ex)) { keep = s; drop = ex; keptOut[keptOut.indexOf(ex)] = s; }
-    if (drop.has_receipt && !keep.has_receipt) { keep.has_receipt = true; keep.receipt_url = drop.receipt_url; }
-    if (drop.project && !keep.project) keep.project = drop.project;
-    if (String(keep.status) === "PENDING_CLEAR" && String(drop.status) !== "PENDING_CLEAR") keep.status = drop.status;
-  }
-  // [25/9] Χρεώσεις που αποκαλύφθηκαν από τη διόρθωση αλλά ήταν ΠΡΙΝ από αυτήν: οι υπάλληλοι τις έχουν ήδη
-  //   δώσει σε χαρτί στον Κώστα → ΔΕΝ εμφανίζονται/δεν στέλνουν υπενθυμίσεις. Ό,τι νέο από εδώ και πέρα εμφανίζεται κανονικά.
-  const HIDDEN_BEFORE_FIX = new Set([1579,5152,5309,5537,6091,6586,7078,7081,7258,7553,8969,9577,12501,12824,12825,13486,14015,14569,14575,14971,15184]);
-  return [...reals, ...keptOut].filter((c) => !HIDDEN_BEFORE_FIX.has(Number(c.id)));
-}
+// [25/9] Ενιαίο ξεδίπλωμα για όλη την εφαρμογή → βλ. api/_dedup.js
+const { dedupCharges } = require("./_dedup.js");
 
 function baseUrl(req) {
   const host = req.headers["x-forwarded-host"] || req.headers.host;

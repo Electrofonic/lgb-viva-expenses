@@ -23,61 +23,8 @@ function fixDsTime(iso) { try { const w = new Date(iso); return new Date(w.getTi
 function athDate(iso) { try { return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Athens" }).format(new Date(iso)); } catch (e) { return ""; } }
 
 // --- ίδιο dedup με την εμφάνιση (για να ελέγχουμε ΑΚΡΙΒΩΣ ό,τι βλέπει ο χρήστης) ---
-function dedupCharges(rows) {
-  rows = (rows || []).filter((r) => String(r && r.status) !== "VOID_JULY"); // μηδενισμένες Ιουλίου → εκτός
-  const norm = (id) => String(id || "").replace(/^AUTH-/, "");
-  const isDup = (m) => /Viva Wallet Card/i.test(m || "");
-  rows = (rows || []).map((c) => isDup(c.merchant) ? { ...c, occurred_at: fixDsTime(c.occurred_at) } : { ...c });
-  const byId = new Map();
-  for (const c of rows) {
-    const k = norm(c.viva_tx_id); const ex = byId.get(k);
-    if (!ex) { byId.set(k, { ...c }); continue; }
-    const m = { ...ex };
-    if (isDup(m.merchant) && !isDup(c.merchant)) m.merchant = c.merchant;
-    if (String(c.occurred_at || "") < String(m.occurred_at || "")) m.occurred_at = c.occurred_at;
-    if (c.has_receipt) { m.has_receipt = true; }
-    if (c.project) m.project = c.project;
-    if (String(c.status) !== "PENDING_CLEAR") m.status = c.status;
-    byId.set(k, m);
-  }
-  const list = [...byId.values()];
-  const reals = list.filter((c) => !isDup(c.merchant));
-  const dups = list.filter((c) => isDup(c.merchant)).sort((a, b) => String(a.occurred_at || "").localeCompare(String(b.occurred_at || "")));
-  const pool = {}; for (const r of reals) { const k = Math.abs(+r.amount).toFixed(2); (pool[k] = pool[k] || []).push(r); }
-  const used = new Set(); const kept = [];
-  for (const s of dups) {
-    const k = Math.abs(+s.amount).toFixed(2);
-    const cand = (pool[k] || []).filter((r) => !used.has(r) && String(r.occurred_at || "") <= String(s.occurred_at || "") && (Date.parse(s.occurred_at) - Date.parse(r.occurred_at)) <= 7 * 864e5).sort((a, b) => String(b.occurred_at || "").localeCompare(String(a.occurred_at || "")));
-    if (cand[0]) used.add(cand[0]); else kept.push(s);
-  }
-  // 3) [fix 25/9] Ζευγάρωμα ΜΟΝΟ δέσμευσης↔εκκαθάρισης της ΙΔΙΑΣ αγοράς: ίδιο ποσό, εκκαθάριση έως 6 μέρες μετά,
-  //    1-προς-1, με προτίμηση ίδιου καταστήματος. (Παλιά ένωνε ΟΛΑ τα ίδια ποσά όλων των μηνών → έκρυβε
-  //    μηνιαίες συνδρομές Claude/Apple/OpenAI και αγορές ίδιου ποσού.)
-  const DAY = 864e5;
-  const mkey = (m) => String(m || "").replace(/^.*Viva Wallet Card\s*-?\s*/i, "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5);
-  const isAuthRow = (c) => /^AUTH-/.test(String(c.viva_tx_id || ""));
-  const orphanAuths = kept.filter(isAuthRow), orphanSettles = kept.filter((c) => !isAuthRow(c));
-  const paired = new Set(), keptOut = [...orphanAuths];
-  for (const s of orphanSettles) {
-    const k = Math.abs(+s.amount).toFixed(2), ts = Date.parse(s.occurred_at);
-    const cands = orphanAuths.filter((a) => { const d = ts - Date.parse(a.occurred_at); return !paired.has(a) && Math.abs(+a.amount).toFixed(2) === k && d >= -DAY && d <= 6 * DAY; })
-      .sort((a, b) => ((mkey(b.merchant) === mkey(s.merchant)) - (mkey(a.merchant) === mkey(s.merchant))) || (Date.parse(b.occurred_at) - Date.parse(a.occurred_at)));
-    const ex = cands[0];
-    if (!ex) { keptOut.push(s); continue; }
-    paired.add(ex);
-    // Επιζεί η εγγραφή που έχει ήδη δουλειά πάνω της (Elorus/απόδειξη/project) — ώστε να μη χαθεί ο δεσμός με το Elorus.
-    const score = (c) => (c.raw && c.raw.elorus_id ? 4 : 0) + (c.has_receipt ? 2 : 0) + (c.project ? 1 : 0);
-    let keep = ex, drop = s;
-    if (score(s) > score(ex)) { keep = s; drop = ex; keptOut[keptOut.indexOf(ex)] = s; }
-    if (drop.has_receipt && !keep.has_receipt) { keep.has_receipt = true; keep.receipt_url = drop.receipt_url; }
-    if (drop.project && !keep.project) keep.project = drop.project;
-    if (String(keep.status) === "PENDING_CLEAR" && String(drop.status) !== "PENDING_CLEAR") keep.status = drop.status;
-  }
-  // [25/9] Χρεώσεις που αποκαλύφθηκαν από τη διόρθωση αλλά ήταν ΠΡΙΝ από αυτήν: οι υπάλληλοι τις έχουν ήδη
-  //   δώσει σε χαρτί στον Κώστα → ΔΕΝ εμφανίζονται/δεν στέλνουν υπενθυμίσεις. Ό,τι νέο από εδώ και πέρα εμφανίζεται κανονικά.
-  const HIDDEN_BEFORE_FIX = new Set([1579,5152,5309,5537,6091,6586,7078,7081,7258,7553,8969,9577,12501,12824,12825,13486,14015,14569,14575,14971,15184]);
-  return [...reals, ...keptOut].filter((c) => !HIDDEN_BEFORE_FIX.has(Number(c.id)));
-}
+// [25/9] Ενιαίο ξεδίπλωμα για όλη την εφαρμογή → βλ. api/_dedup.js
+const { dedupCharges, HIDDEN_BEFORE_FIX } = require("./_dedup.js");
 
 async function dsToken() {
   const id = process.env.VIVA_DS_CLIENT_ID, sec = process.env.VIVA_DS_SECRET;
@@ -104,7 +51,7 @@ async function dsSince(token, since) {
   }
   return out;
 }
-const KNOWN_HIDDEN = new Set([1579,5152,5309,5537,6091,6586,7078,7081,7258,7553,8969,9577,12501,12824,12825,13486,14015,14569,14575,14971,15184]);
+const KNOWN_HIDDEN = HIDDEN_BEFORE_FIX;
 
 module.exports = async (req, res) => {
   try {
@@ -142,7 +89,7 @@ module.exports = async (req, res) => {
       const ours = dedupCharges(raw || []).filter((c) => athDate(c.occurred_at) >= START_DATE);
       const issues = [];
       const ourAmts = {};
-      for (const c of ours) { const k = Math.abs(+c.amount).toFixed(2); ourAmts[k] = (ourAmts[k] || 0) + 1; }
+      for (const c of ours) { const k = Math.abs(+c.amount).toFixed(2); ourAmts[k] = (ourAmts[k] || 0) + 1; if (c.hold_amount) { const h = Math.abs(+c.hold_amount).toFixed(2); ourAmts[h] = (ourAmts[h] || 0) + 1; } }
       const vAmts = vivaAmts[w] || {};
       // διπλά / φαντάσματα: εμφανίζουμε ένα ποσό πιο πολλές φορές απ' όσο το χτύπησε η Viva
       for (const k of Object.keys(ourAmts)) {
@@ -175,7 +122,7 @@ module.exports = async (req, res) => {
           if (!isBuy) continue;
           const t = Date.parse(fixDsTime(x.created)); if (!(t < cutoff)) continue;
           const k = Math.abs(a).toFixed(2);
-          const near = (c) => Math.abs(+c.amount).toFixed(2) === k && Math.abs(Date.parse(c.occurred_at) - t) <= 4 * 864e5;
+          const near = (c) => (Math.abs(+c.amount).toFixed(2) === k || (c.hold_amount && Math.abs(+c.hold_amount).toFixed(2) === k)) && Math.abs(Date.parse(c.occurred_at) - t) <= 4 * 864e5;
           if (ours.some(near)) continue;
           const txid = String(x.accountTransactionId || "");
           const inDb = (raw || []).filter((c) => String(c.viva_tx_id || "").replace(/^AUTH-/, "") === txid);

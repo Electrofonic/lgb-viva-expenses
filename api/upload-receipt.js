@@ -6,7 +6,8 @@
 const { sbSelect, sbUpdate, sbUploadReceipt, verifyToken } = require("./_viva.js");
 
 const INTERNAL = "LGB HOME";
-function statusOf({ has_receipt, project }) {
+function statusOf({ has_receipt, project, approved_loss }) {
+  if (approved_loss) return "APPROVED_LOSS"; // [25/9] η εξαίρεση του Κώστα δεν ακυρώνεται από νέο ανέβασμα/project
   if (project === INTERNAL) return "INTERNAL";
   if (has_receipt && project) return "COMPLETE";
   if (!has_receipt && !project) return "MISSING_ALL";
@@ -133,6 +134,7 @@ module.exports = async (req, res) => {
     const merged = {
       has_receipt: patch.has_receipt ?? cur.has_receipt,
       project: patch.project !== undefined ? patch.project : cur.project,
+      approved_loss: cur.approved_loss,
     };
     patch.status = statusOf(merged);
 

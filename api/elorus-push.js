@@ -92,62 +92,8 @@ function fixDsTime(iso) { try { const w = new Date(iso); return new Date(w.getTi
 
 // ΙΔΙΟ dedup με το dashboard/my.js — ΚΡΙΣΙΜΟ ώστε διπλές φυσικές εγγραφές (cron/settlement)
 // της ίδιας αγοράς να ΜΗΝ δημιουργούν διπλά έξοδα στο Elorus.
-function dedupCharges(rows) {
-  rows = (rows || []).filter((r) => String(r && r.status) !== "VOID_JULY"); // μηδενισμένες Ιουλίου → εκτός
-  const norm = (id) => String(id || "").replace(/^AUTH-/, "");
-  const isDup = (m) => /Viva Wallet Card/i.test(m || "");
-  rows = (rows || []).map((c) => isDup(c.merchant) ? { ...c, occurred_at: fixDsTime(c.occurred_at) } : { ...c });
-  const byId = new Map();
-  for (const c of rows) {
-    const k = norm(c.viva_tx_id); const ex = byId.get(k);
-    if (!ex) { byId.set(k, { ...c }); continue; }
-    const m = { ...ex };
-    if (isDup(m.merchant) && !isDup(c.merchant)) m.merchant = c.merchant;
-    if (String(c.occurred_at || "") < String(m.occurred_at || "")) m.occurred_at = c.occurred_at;
-    if (c.has_receipt) { m.has_receipt = true; m.receipt_url = c.receipt_url || m.receipt_url; }
-    if (c.project) m.project = c.project;
-    if (c.raw && c.raw.elorus_id) m.raw = c.raw; // κράτα το raw που έχει ήδη elorus_id
-    if (String(c.status) !== "PENDING_CLEAR") m.status = c.status;
-    byId.set(k, m);
-  }
-  const list = [...byId.values()];
-  const reals = list.filter((c) => !isDup(c.merchant));
-  const dups = list.filter((c) => isDup(c.merchant)).sort((a, b) => String(a.occurred_at || "").localeCompare(String(b.occurred_at || "")));
-  const pool = {}; for (const r of reals) { const k = Math.abs(+r.amount).toFixed(2); (pool[k] = pool[k] || []).push(r); }
-  const used = new Set(); const kept = [];
-  for (const s of dups) {
-    const k = Math.abs(+s.amount).toFixed(2);
-    const cand = (pool[k] || []).filter((r) => !used.has(r) && String(r.occurred_at || "") <= String(s.occurred_at || "") && (Date.parse(s.occurred_at) - Date.parse(r.occurred_at)) <= 7 * 864e5).sort((a, b) => String(b.occurred_at || "").localeCompare(String(a.occurred_at || "")));
-    if (cand[0]) { used.add(cand[0]); if (s.has_receipt && !cand[0].has_receipt) { cand[0].has_receipt = true; cand[0].receipt_url = s.receipt_url; } if (s.project && !cand[0].project) cand[0].project = s.project; } else kept.push(s);
-  }
-  // 3) [fix 25/9] Ζευγάρωμα ΜΟΝΟ δέσμευσης↔εκκαθάρισης της ΙΔΙΑΣ αγοράς: ίδιο ποσό, εκκαθάριση έως 6 μέρες μετά,
-  //    1-προς-1, με προτίμηση ίδιου καταστήματος. (Παλιά ένωνε ΟΛΑ τα ίδια ποσά όλων των μηνών → έκρυβε
-  //    μηνιαίες συνδρομές Claude/Apple/OpenAI και αγορές ίδιου ποσού.)
-  const DAY = 864e5;
-  const mkey = (m) => String(m || "").replace(/^.*Viva Wallet Card\s*-?\s*/i, "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5);
-  const isAuthRow = (c) => /^AUTH-/.test(String(c.viva_tx_id || ""));
-  const orphanAuths = kept.filter(isAuthRow), orphanSettles = kept.filter((c) => !isAuthRow(c));
-  const paired = new Set(), keptOut = [...orphanAuths];
-  for (const s of orphanSettles) {
-    const k = Math.abs(+s.amount).toFixed(2), ts = Date.parse(s.occurred_at);
-    const cands = orphanAuths.filter((a) => { const d = ts - Date.parse(a.occurred_at); return !paired.has(a) && Math.abs(+a.amount).toFixed(2) === k && d >= -DAY && d <= 6 * DAY; })
-      .sort((a, b) => ((mkey(b.merchant) === mkey(s.merchant)) - (mkey(a.merchant) === mkey(s.merchant))) || (Date.parse(b.occurred_at) - Date.parse(a.occurred_at)));
-    const ex = cands[0];
-    if (!ex) { keptOut.push(s); continue; }
-    paired.add(ex);
-    // Επιζεί η εγγραφή που έχει ήδη δουλειά πάνω της (Elorus/απόδειξη/project) — ώστε να μη χαθεί ο δεσμός με το Elorus.
-    const score = (c) => (c.raw && c.raw.elorus_id ? 4 : 0) + (c.has_receipt ? 2 : 0) + (c.project ? 1 : 0);
-    let keep = ex, drop = s;
-    if (score(s) > score(ex)) { keep = s; drop = ex; keptOut[keptOut.indexOf(ex)] = s; }
-    if (drop.has_receipt && !keep.has_receipt) { keep.has_receipt = true; keep.receipt_url = drop.receipt_url; }
-    if (drop.project && !keep.project) keep.project = drop.project;
-    if (String(keep.status) === "PENDING_CLEAR" && String(drop.status) !== "PENDING_CLEAR") keep.status = drop.status;
-  }
-  // [25/9] Χρεώσεις που αποκαλύφθηκαν από τη διόρθωση αλλά ήταν ΠΡΙΝ από αυτήν: οι υπάλληλοι τις έχουν ήδη
-  //   δώσει σε χαρτί στον Κώστα → ΔΕΝ εμφανίζονται/δεν στέλνουν υπενθυμίσεις. Ό,τι νέο από εδώ και πέρα εμφανίζεται κανονικά.
-  const HIDDEN_BEFORE_FIX = new Set([1579,5152,5309,5537,6091,6586,7078,7081,7258,7553,8969,9577,12501,12824,12825,13486,14015,14569,14575,14971,15184]);
-  return [...reals, ...keptOut].filter((c) => !HIDDEN_BEFORE_FIX.has(Number(c.id)));
-}
+// [25/9] Ενιαίο ξεδίπλωμα για όλη την εφαρμογή → βλ. api/_dedup.js
+const { dedupCharges } = require("./_dedup.js");
 function athDate(iso) { try { return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Athens" }).format(new Date(iso)); } catch (e) { return String(iso || "").slice(0, 10); } }
 function grDate(iso) { try { return new Intl.DateTimeFormat("el-GR", { timeZone: "Europe/Athens", day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(iso)); } catch (e) { return ""; } }
 
@@ -257,7 +203,7 @@ async function findSupplier(merchantRaw) {
 // Κάθε έξοδο που φτιάχνουμε φέρει custom_id = VIVA-<chargeId>. Πριν από ΚΑΘΕ καταχώρηση
 // ρωτάμε το ΙΔΙΟ το Elorus (όχι μόνο τη βάση μας) αν υπάρχει ήδη.
 function vivaTag(chargeId) { return `VIVA-${chargeId}`; }
-async function findExistingExpense(chargeId, dateStr, amt) {
+async function findExistingExpense(chargeId, dateStr, amt, walletId) {
   const tag = vivaTag(chargeId);
   // 1) ακριβές ταίριασμα με custom_id (ο δικός μας «δακτυλικός αποτυπωτής»)
   for (const qs of [`custom_id=${encodeURIComponent(tag)}`, `search=${encodeURIComponent(tag)}`]) {
@@ -284,7 +230,21 @@ async function findExistingExpense(chargeId, dateStr, amt) {
   if (same.length) {
     const mine = same.find((x) => String(x.custom_id || "") === tag);
     if (mine) return { kind: "same-charge", expense: mine };
-    return { kind: "possible-duplicate", expense: same[0], count: same.length };
+    // [25/9] Έξοδο ίδιου ποσού/ημέρας που είναι ΔΙΚΟ ΜΑΣ για χρέωση ΑΛΛΟΥ υπαλλήλου (άλλη κάρτα) = άλλη αγορά, όχι διπλό.
+    //   (π.χ. δύο εισιτήρια ΟΑΣΑ 1,20€ από δύο άτομα την ίδια μέρα). Χειροκίνητα έξοδα ή ίδια κάρτα → μένουν «ύποπτα».
+    const suspects = [];
+    for (const x of same) {
+      const m = /^VIVA-(\d+)$/.exec(String(x.custom_id || ""));
+      if (m && walletId) {
+        try {
+          const rows = await sbSelect("charges", `id=eq.${m[1]}&select=wallet_id`);
+          if (rows && rows[0] && String(rows[0].wallet_id) !== String(walletId)) continue;
+        } catch (e) { /* αν δεν ξέρουμε, μένει ύποπτο */ }
+      }
+      suspects.push(x);
+    }
+    if (!suspects.length) return null;
+    return { kind: "possible-duplicate", expense: suspects[0], count: suspects.length };
   }
   return null;
 }
@@ -502,7 +462,7 @@ async function pushCharge(c, nameByWallet, opts) {
     if (chk.status === 404) {
       const amt0 = Math.abs(+c.amount);
       const d0 = athDate(c.occurred_at);
-      const alt = await findExistingExpense(c.id, d0, amt0);
+      const alt = await findExistingExpense(c.id, d0, amt0, c.wallet_id);
       if (alt && alt.expense && String(alt.expense.id) !== String(existing)) {
         await sbUpdate("charges", `id=eq.${encodeURIComponent(c.id)}`, { raw: Object.assign({}, raw0, { elorus_id: alt.expense.id, elorus_attachment: null, elorus_supplier: null }) });
         return { ok: true, skipped: "relinked", id: alt.expense.id, detail: "Ο παλιός δεσμός ήταν σε διαγραμμένο έξοδο — συνδέθηκε με το υπάρχον" };
@@ -564,7 +524,7 @@ async function pushCharge(c, nameByWallet, opts) {
 
   // ΦΥΛΑΚΑΣ: υπάρχει ήδη στο Elorus; (ποτέ διπλή καταχώρηση)
   if (!opts.allowDup) {
-    const dup = await findExistingExpense(c.id, date, amt);
+    const dup = await findExistingExpense(c.id, date, amt, c.wallet_id);
     if (dup && dup.kind === "same-charge") {
       // Υπάρχει ήδη δικό μας — κράτα τη σύνδεση, μη φτιάξεις νέο
       await sbUpdate("charges", `id=eq.${encodeURIComponent(c.id)}`, { raw: Object.assign({}, raw0, { elorus_id: dup.expense.id }) });
@@ -846,17 +806,21 @@ module.exports = async (req, res) => {
       const ws = await wallets();
       const members = (Array.isArray(ws) ? ws : []).filter((x) => x.hasIssuedCard && !x.isPrimary && x.friendlyName && x.friendlyName !== "ακυρο" && !EXCLUDED.has(String(x.walletId))).map((x) => String(x.walletId));
       const out = []; let scanned = 0;
+      // [25/9] Πρώτα ΟΛΕΣ οι ολοκληρωμένες που ΔΕΝ έχουν περάσει ακόμα, μετά (αν περισσεύει χρόνος) επαλήθευση των παλιών.
+      //   Πριν: σειρά ανά κάρτα → η συνάρτηση κοβόταν στα 60″ και οι τελευταίες κάρτες δεν περνούσαν ποτέ.
+      const T0 = Date.now(), BUDGET = 35000;
+      const todo = [];
       for (const wid of members) {
         const raw = await sbSelectAll("charges", `wallet_id=eq.${wid}&order=occurred_at.desc,id.desc`);
-        const ded = dedupCharges(raw || []);
-        for (const c of ded) {
-          if (!c.has_receipt || !c.project) continue;
-          scanned++;
-          // ΔΕΝ παρακάμπτουμε: το pushCharge επαληθεύει ότι το έξοδο υπάρχει ΟΝΤΩΣ στο Elorus
-          // (πιάνει ορφανά αν διαγράφηκε) και είναι idempotent — δεν δημιουργεί ποτέ διπλό.
-          const r = await pushCharge(c, nameByWallet);
-          out.push({ id: c.id, ...r });
-        }
+        for (const c of dedupCharges(raw || [])) if (c.has_receipt && c.project) todo.push(c);
+      }
+      todo.sort((a, b) => (!!(a.raw && a.raw.elorus_id) - !!(b.raw && b.raw.elorus_id)) || String(b.occurred_at).localeCompare(String(a.occurred_at)));
+      for (const c of todo) {
+        if (Date.now() - T0 > BUDGET) { out.push({ id: c.id, skipped: "time-budget" }); continue; }
+        scanned++;
+        // Το pushCharge επαληθεύει ότι το έξοδο υπάρχει ΟΝΤΩΣ στο Elorus και είναι idempotent — δεν δημιουργεί διπλό.
+        const r = await pushCharge(c, nameByWallet);
+        out.push({ id: c.id, ...r });
       }
       const created = out.filter((x) => x.ok && !x.skipped).length;
       const attached = out.filter((x) => x.skipped === "attach-only").length;
