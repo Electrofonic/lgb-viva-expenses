@@ -99,7 +99,8 @@ async function dsSince(token, since) {
   for (let p = 1; p <= 10; p++) {
     const r = await fetch(`https://api.vivapayments.com/dataservices/v2/accounttransactions/Search?dateFrom=${since}&dateTo=2030-01-01T00:00:00&page=${p}&pageSize=500`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: "{}" });
     if (!r.ok) throw new Error(`DS ${r.status}`);
-    const pg = (await r.json()).data || []; out.push(...pg); if (pg.length < 500) break;
+    const pg = (await r.json()).data || []; out.push(...pg.filter((x) => String(x.created || "") >= since));
+    if (pg.length < 500 || pg.some((x) => String(x.created || "") < since)) break; // η Viva αγνοεί το dateFrom
   }
   return out;
 }

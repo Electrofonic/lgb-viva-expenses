@@ -43,7 +43,12 @@ module.exports = async (req, res) => {
     // τελευταίων ημερών του μήνα που έφταναν αργά (ή μετά από διακοπή) χάνονταν για πάντα. Ασφαλές: ignore-duplicates.
     const since = new Date(Date.now() - 10 * 864e5).toISOString().slice(0, 19);
     const rows = [];
-    for (let p = 1; p <= 10; p++) { const pg = await dsPage(token, p, since); rows.push(...pg); if (pg.length < 500) break; }
+    // Η Viva ΑΓΝΟΕΙ το dateFrom (επιστρέφει από τα νεότερα προς τα παλιά) → κόβουμε εμείς και σταματάμε μόλις περάσουμε το όριο.
+    for (let p = 1; p <= 6; p++) {
+      const pg = await dsPage(token, p, since);
+      rows.push(...pg.filter((x) => String(x.created || "") >= since));
+      if (pg.length < 500 || pg.some((x) => String(x.created || "") < since)) break;
+    }
 
     const ym = new Date().toISOString().slice(0, 7); // τρέχων μήνας YYYY-MM
     const batch = [];
