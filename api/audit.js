@@ -2,7 +2,7 @@
 // (authorizations = τα χτυπήματα) και τη συγκρίνει με ό,τι ΔΕΙΧΝΕΙ η πλατφόρμα (μετά το dedup).
 // Πιάνει: διπλές χρεώσεις/συνδρομές, λάθος ποσά, φαντάσματα, λάθος/μελλοντικές ώρες.
 // GET /api/audit  → { ok, generatedAt, totalIssues, people:[{wallet,name,ours,viva,issues:[...]}] }
-const { wallets, sbSelect, sbSelectAll } = require("./_viva.js");
+const { wallets, sbSelect, sbSelectAll, isAdmin } = require("./_viva.js");
 
 const START_DATE = "2026-07-16";
 const EXCLUDED = new Set(["901067108914"]);
@@ -54,6 +54,7 @@ async function dsSince(token, since) {
 const KNOWN_HIDDEN = HIDDEN_BEFORE_FIX;
 
 module.exports = async (req, res) => {
+  res.setHeader("Cache-Control", "private, no-store"); if (!isAdmin(req)) return res.status(403).json({ error: "Μόνο για διαχειριστή" });
   try {
     const ws = await wallets();
     const members = (Array.isArray(ws) ? ws : []).filter((w) => w.hasIssuedCard && !w.isPrimary && w.friendlyName && w.friendlyName !== "ακυρο" && !EXCLUDED.has(String(w.walletId))).map((w) => String(w.walletId));

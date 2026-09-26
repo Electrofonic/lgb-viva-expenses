@@ -1,7 +1,7 @@
 // Τροφοδοτεί την προσωπική σελίδα κάθε υπαλλήλου (me.html).
 //  GET ?w=<walletId>&t=<token>  → επιστρέφει το όνομα + τις χρεώσεις ΜΟΝΟ αυτού του ατόμου (τρέχων μήνας)
 //  GET ?links=1                 → (για CFO) όλα τα προσωπικά links για διανομή
-const { wallets, sbSelect, sbSelectAll, personToken, verifyToken } = require("./_viva.js");
+const { wallets, sbSelect, sbSelectAll, personToken, verifyToken, isAdmin } = require("./_viva.js");
 
 // Έναρξη καταγραφής — δείχνουμε ΜΟΝΟ χρεώσεις από αυτή τη μέρα κι έπειτα.
 // (Οι παλιές του Ιουλίου δεν θα τακτοποιηθούν — καθαρή εικόνα από σήμερα.)
@@ -101,6 +101,8 @@ module.exports = async (req, res) => {
 
     // Λίστα προσωπικών links για τον CFO
     if (q.links) {
+      res.setHeader("Cache-Control", "private, no-store");
+      if (!isAdmin(req)) return res.status(403).json({ error: "Μόνο για διαχειριστή" }); // [25/9] τα links όλων ΜΟΝΟ στον διαχειριστή
       const base = baseUrl(req);
       const list = members.map((w) => {
         const m = w.friendlyName.match(/^(.*?)\s*(\d{4})$/);

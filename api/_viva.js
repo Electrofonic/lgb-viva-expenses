@@ -77,6 +77,15 @@ async function sbSelect(table, query = "") {
   return r.json();
 }
 
+// [25/9] Προστασία διαχειριστικών σημείων (dashboard/Επόπτης). Κλειδί στο Vercel env ADMIN_SECRET.
+// Αν ΔΕΝ έχει οριστεί ακόμα → επιτρέπει (για να μη σπάσει τίποτα πριν μπει το κλειδί).
+function isAdmin(req) {
+  const s = process.env.ADMIN_SECRET;
+  if (!s) return true;
+  const k = (req.headers && (req.headers["x-admin-key"] || req.headers["X-Admin-Key"])) || (req.query && req.query.k) || "";
+  return String(k) === String(s);
+}
+
 // [25/9] Φέρνει ΟΛΕΣ τις γραμμές σε σελίδες των 1000 (το Supabase κόβει στις 1000 σιωπηλά).
 async function sbSelectAll(table, query = "") {
   const c = sb();
@@ -152,7 +161,7 @@ async function sbUploadReceipt(path, bytes, contentType) {
   return { ok: true, url: `${c.url}/storage/v1/object/public/receipts/${path}` };
 }
 
-module.exports = { sbSelectAll,
+module.exports = { sbSelectAll, isAdmin,
   vivaToken, wallets, webhookKey, sbInsert, sbSelect, sbUpdate,
   personToken, verifyToken, sbUploadReceipt,
 };

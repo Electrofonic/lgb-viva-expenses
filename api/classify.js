@@ -1,6 +1,6 @@
 // Αποθήκευση χειροκίνητης ταξινόμησης από τον CFO/λογίστρια:
 // ορισμός project ή/και μαρκάρισμα «εγκεκριμένη απώλεια». Γράφει ΜΟΝΙΜΑ στη βάση.
-const { sbSelect, sbUpdate } = require("./_viva.js");
+const { sbSelect, sbUpdate, isAdmin } = require("./_viva.js");
 
 const INTERNAL = "LGB HOME";
 
@@ -15,6 +15,7 @@ function statusOf({ has_receipt, project, approved_loss }) {
 }
 
 module.exports = async (req, res) => {
+  res.setHeader("Cache-Control", "private, no-store"); if (!isAdmin(req)) return res.status(403).json({ error: "Μόνο για διαχειριστή" });
   if (req.method !== "POST")
     return res.status(405).json({ error: "POST only" });
   try {

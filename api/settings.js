@@ -2,7 +2,7 @@
 // Αποθηκεύονται σε μία «config» γραμμή του πίνακα charges (viva_tx_id = "__config_exempt__"),
 // ώστε να μη χρειάζεται νέος πίνακας. GET διαβάζει τη λίστα, POST προσθέτει/αφαιρεί μοτίβο.
 // Έτσι οι εξαιρέσεις ισχύουν ΑΜΕΣΩΣ, χωρίς redeploy.
-const { sbSelect, sbInsert, sbUpdate } = require("./_viva.js");
+const { sbSelect, sbInsert, sbUpdate, isAdmin } = require("./_viva.js");
 
 const KEY = "__config_exempt__";
 
@@ -30,6 +30,7 @@ async function writeList(merchants) {
 const norm = (s) => String(s || "").trim().toUpperCase();
 
 module.exports = async (req, res) => {
+  res.setHeader("Cache-Control", "private, no-store"); if (!isAdmin(req)) return res.status(403).json({ error: "Μόνο για διαχειριστή" });
   try {
     if (req.method === "GET") {
       return res.status(200).json({ merchants: await readList() });
