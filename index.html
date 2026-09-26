@@ -149,6 +149,18 @@
 <div class="toast" id="toast"></div>
 
 <script>
+// [25/9] Κλειδί διαχειριστή: άνοιξε μία φορά το dashboard με ?k=<κλειδί>· αποθηκεύεται σε αυτόν τον browser
+// και μπαίνει αυτόματα σε κάθε κλήση /api/. Χωρίς κλειδί, τα προστατευμένα δεδομένα δεν φορτώνουν.
+(function(){try{var u=new URL(location.href),k=u.searchParams.get("k");
+  if(k){localStorage.setItem("lgbAdminKey",k);u.searchParams.delete("k");history.replaceState(null,"",u.pathname+(u.search?u.search:"")+u.hash);}
+  var key=localStorage.getItem("lgbAdminKey")||"";if(!key)return;
+  var of=window.fetch.bind(window);
+  window.fetch=function(input,init){var url=typeof input==="string"?input:(input&&input.url)||"";
+    if(/^\/api\//.test(url)||url.indexOf(location.origin+"/api/")===0){init=Object.assign({},init||{});var h=new Headers(init.headers||{});h.set("X-Admin-Key",key);init.headers=h;}
+    return of(input,init);};
+}catch(e){}})();
+</script>
+<script>
 /* ---------------- ΔΕΔΟΜΕΝΑ ---------------- */
 // Πραγματικά wallets από Viva API (2/7/2026)
 const PEOPLE=[
