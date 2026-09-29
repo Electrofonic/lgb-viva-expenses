@@ -124,7 +124,47 @@ function dedupCharges(rows, opts = {}) {
   // Οι 21 κρυφές μένουν κρυφές ΠΑΝΤΑ (κάποιες έχουν ήδη περαστεί στο Elorus εκτός εφαρμογής → αλλιώς θα γράφονταν διπλά).
   const all = [...realOut.values(), ...out.values(), ...finalSettles];
   if (opts.onlyHidden) return all.filter((c) => c._hidden); // για τον audit: ποιες ομάδες κρύβονται σκόπιμα
-  return all.filter((c) => !c._hidden).map((c) => { const { _hidden, ...rest } = c; return rest; });
+  let res = all.filter((c) => !c._hidden).map((c) => { const { _hidden, ...rest } = c; return rest; });
+  // [29/9] Δεσμεύσεις που ΑΚΥΡΩΘΗΚΑΝ (π.χ. ταξί που ακυρώθηκε χωρίς χρέωση): η Viva αποδέσμευσε τα λεφτά → δεν είναι χρέωση.
+  if (opts.wallet) {
+    const rel = releasedHoldIds(res, opts.wallet);
+    if (opts.onlyReleased) return res.filter((c) => rel.has(c.id));
+    res = res.filter((c) => !rel.has(c.id));
+  }
+  return res;
 }
 
-module.exports = { dedupCharges, fixDsTime, athOffMin, HIDDEN_BEFORE_FIX, brandKey };
+// Ποιες εκκρεμείς δεσμεύσεις ΔΕΝ κρατιούνται πια από τη Viva (αποδεσμεύτηκαν/ακυρώθηκαν).
+// Η Viva δίνει ανά κάρτα: amount (υπόλοιπο) και available (διαθέσιμο). Η διαφορά = ό,τι είναι ακόμα δεσμευμένο ΤΩΡΑ.
+//  • Αν δεν υπάρχει καμία δέσμευση (amount == available) → όλες οι εκκρεμείς δεσμεύσεις μας έχουν αποδεσμευτεί.
+//  • Αλλιώς βρίσκουμε ποιος συνδυασμός δεσμεύσεων δίνει ακριβώς το δεσμευμένο ποσό· όσες δεν χωράνε σε ΚΑΝΕΝΑΝ
+//    τέτοιο συνδυασμό έχουν αποδεσμευτεί. Αν δεν βγαίνει καθαρή απάντηση → δεν κρύβουμε τίποτα (συντηρητικά).
+//  • Δέσμευση χωρίς εκκαθάριση για > 14 μέρες → θεωρείται αποδεσμευμένη (οι κάρτες τις ελευθερώνουν αυτόματα).
+// Ποτέ δεν αγγίζουμε δεσμεύσεις με απόδειξη/project/Elorus ή νεότερες των 2 ωρών.
+function releasedHoldIds(list, wallet, now = Date.now()) {
+  const released = new Set();
+  const pend = list.filter((c) => isAuthRow(c) && String(c.status) === "PENDING_CLEAR");
+  const isCand = (c) => !c.has_receipt && !c.project && !(c.raw && c.raw.elorus_id) && !c.approved_loss && now - tms(c) > 2 * 3600e3;
+  const cands = pend.filter(isCand);
+  for (const c of cands) if (now - tms(c) > 14 * DAY) released.add(c.id);
+  const rest = cands.filter((c) => !released.has(c.id));
+  const amt = Number(wallet && wallet.amount), av = Number(wallet && wallet.available);
+  if (!rest.length || !isFinite(amt) || !isFinite(av)) return released;
+  const others = pend.filter((c) => !isCand(c)).reduce((s, c) => s + Math.abs(+c.amount), 0); // δεσμεύσεις που δεν εξετάζουμε
+  const reserved = Math.round((amt - av - others) * 100) / 100;
+  if (reserved < -0.01) return released;               // ασυνέπεια → τίποτα
+  if (reserved <= 0.01) { for (const c of rest) released.add(c.id); return released; }
+  if (rest.length > 14) return released;               // πολλοί συνδυασμοί → συντηρητικά
+  const vals = rest.map((c) => Math.round(Math.abs(+c.amount) * 100));
+  const target = Math.round(reserved * 100);
+  const inSome = new Set(); let found = 0;
+  for (let mask = 1; mask < (1 << rest.length); mask++) {
+    let s = 0; for (let i = 0; i < rest.length; i++) if (mask & (1 << i)) s += vals[i];
+    if (Math.abs(s - target) <= 1) { found++; for (let i = 0; i < rest.length; i++) if (mask & (1 << i)) inSome.add(i); }
+  }
+  if (!found) return released;                          // δεν βγαίνει → τίποτα
+  rest.forEach((c, i) => { if (!inSome.has(i)) released.add(c.id); });
+  return released;
+}
+
+module.exports = { dedupCharges, fixDsTime, athOffMin, HIDDEN_BEFORE_FIX, brandKey, releasedHoldIds };

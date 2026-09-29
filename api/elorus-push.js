@@ -653,7 +653,8 @@ module.exports = async (req, res) => {
         if (!perPerson[who]) perPerson[who] = { who, count: 0, amount: 0, nudges: 0, pilot: PILOT_WALLETS.has(String(wid)) };
         const startD = startForWallet(wid); // πιλοτικός → 16/7, αλλιώς → 1/8 (Ιουλίου «σβήνουν»)
         const raw = await sbSelectAll("charges", `wallet_id=eq.${wid}&order=occurred_at.desc,id.desc`);
-        for (const c of dedupCharges(raw || [])) {
+        const wObj2 = (Array.isArray(ws2) ? ws2 : []).find((x) => String(x.walletId) === String(wid));
+        for (const c of dedupCharges(raw || [], { wallet: wObj2 })) {
           if (athDate(c.occurred_at) < startD) continue;
           const amt = Math.abs(+c.amount).toFixed(2);
           const store = cleanName(c.merchant);

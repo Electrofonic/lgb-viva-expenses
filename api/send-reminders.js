@@ -4,7 +4,7 @@
 //   ?action=run&type=INSTANT|EOD|WEEKLY|MONTH_END                                  → κανονικό τρέξιμο
 //        ΑΣΦΑΛΕΙΑ: αν EMAILS_LIVE !== "true" → ΤΙΠΟΤΑ δεν φεύγει σε υπάλληλο· ανακατευθύνεται στον CFO (REVIEW_EMAIL) με [TEST → …].
 //        Μόνο όταν οριστεί ρητά EMAILS_LIVE=true αρχίζουν να φεύγουν στους πραγματικούς παραλήπτες.
-const { sbSelect, sbSelectAll, sbInsert, sbUpdate, personToken, verifyToken } = require("./_viva.js");
+const { sbSelect, sbSelectAll, sbInsert, sbUpdate, personToken, verifyToken, wallets } = require("./_viva.js");
 
 // ── Ξεδίπλωμα διπλοεγγραφών Viva ────────────────────────────────────────────
 // Η Viva γράφει την ίδια αγορά έως και 3 φορές (webhook + δέσμευση + εκκαθάριση).
@@ -365,9 +365,11 @@ module.exports = async (req, res) => {
         (rawByW[w] = rawByW[w] || []).push(c);
       });
       const byW = {};
+      // [29/9] Κατάσταση καρτών από τη Viva → για να μην ζητάμε απόδειξη για δεσμεύσεις που ακυρώθηκαν
+      let wsMap = {}; try { const wsl = await wallets(); for (const x of (Array.isArray(wsl) ? wsl : [])) wsMap[String(x.walletId)] = x; } catch (e) {}
       for (const w of Object.keys(rawByW)) {
         const startD = startFor(w); // πιλοτικός → 16/7, αλλιώς → 1/8 (Ιουλίου «σβήνουν»)
-        for (const c of dedupCharges(rawByW[w])) {
+        for (const c of dedupCharges(rawByW[w], { wallet: wsMap[w] })) {
           // [25/9] Προηγούμενος μήνας: ζητείται ΜΟΝΟ έως τη 10η του επόμενου (μετά σταματούν τα email — πάει στον Κώστα).
           { const cym = athYM(c.occurred_at); if (cym !== ym && !(cym === prevYm && cym >= "2026-09" && athDom <= 10)) continue; }
           if (String(c.occurred_at || "").slice(0, 10) < startD) continue; // όχι πριν την έναρξη του ατόμου

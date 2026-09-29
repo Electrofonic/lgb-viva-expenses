@@ -87,7 +87,9 @@ module.exports = async (req, res) => {
     let totalIssues = 0;
     for (const w of members) {
       const raw = await sbSelectAll("charges", `wallet_id=eq.${w}&order=occurred_at.desc,id.desc`);
-      const ours = dedupCharges(raw || []).filter((c) => athDate(c.occurred_at) >= START_DATE);
+      const wObj = (Array.isArray(ws) ? ws : []).find((x) => String(x.walletId) === String(w));
+      const ours = dedupCharges(raw || [], { wallet: wObj }).filter((c) => athDate(c.occurred_at) >= START_DATE);
+      const releasedHolds = dedupCharges(raw || [], { wallet: wObj, onlyReleased: true }); // ακυρωμένες δεσμεύσεις — γνωστές
       const issues = [];
       const ourAmts = {};
       for (const c of ours) { const k = Math.abs(+c.amount).toFixed(2); ourAmts[k] = (ourAmts[k] || 0) + 1; if (c.hold_amount) { const h = Math.abs(+c.hold_amount).toFixed(2); ourAmts[h] = (ourAmts[h] || 0) + 1; } }
@@ -130,7 +132,8 @@ module.exports = async (req, res) => {
           const inDb = (raw || []).filter((c) => String(c.viva_tx_id || "").replace(/^AUTH-/, "") === txid);
           if (inDb.some((c) => KNOWN_HIDDEN.has(Number(c.id)) || String(c.status) === "VOID_JULY")) continue;
           if ((raw || []).some((c) => KNOWN_HIDDEN.has(Number(c.id)) && near(c))) continue;
-          if (hiddenGroups.some(near)) continue; // ανήκει σε ομάδα που κρύψαμε σκόπιμα (π.χ. εκκαθάριση παλιάς δέσμευσης Uber)
+          if (hiddenGroups.some(near)) continue;
+          if (releasedHolds.some(near)) continue; // [29/9] δέσμευση που ακυρώθηκε (η Viva την αποδέσμευσε) — δεν λείπει // ανήκει σε ομάδα που κρύψαμε σκόπιμα (π.χ. εκκαθάριση παλιάς δέσμευσης Uber)
           const day = athDate(new Date(t).toISOString());
           const key = k + "|" + day; if (seenKeys.has(key)) continue; seenKeys.add(key);
           const store = String(x.userDescription || x.counterPart || "").replace(/^.*Viva Wallet Card\s*-?\s*/i, "").trim();

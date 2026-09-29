@@ -128,7 +128,8 @@ module.exports = async (req, res) => {
 
     const ym = new Date().toISOString().slice(0, 7); // τρέχων μήνας (προεπιλογή)
     const rowsRaw = await sbSelectAll("charges", `wallet_id=eq.${w}&order=occurred_at.desc,id.desc`);
-    const rows = dedupCharges(rowsRaw || [])
+    const rows = dedupCharges(rowsRaw || [], { wallet })
+      .filter((c) => !(c.approved_loss || String(c.status) === "APPROVED_LOSS")) // [29/9] όσες έκλεισε ο Κώστας δεν εμφανίζονται στον υπάλληλο
       .filter((c) => String(c.occurred_at || "") >= START_DATE); // μόνο από σήμερα κι έπειτα
     // Επιστρέφουμε ΟΛΟΥΣ τους μήνες — η σελίδα κάνει πλοήγηση μπρος-πίσω και φιλτράρει.
     const charges = (rows || []).map((c) => ({
