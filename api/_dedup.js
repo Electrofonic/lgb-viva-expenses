@@ -111,7 +111,8 @@ function dedupCharges(rows, opts = {}) {
     //   Αν ο υπάλληλος έχει δουλέψει ΚΑΙ τις δύο, τις αφήνουμε ορατές (ο audit τις αναφέρει ως «πιθανό διπλό»).
     const curOf = (h) => (h.src === "cron" ? out : realOut).get(h.a) || h.a;
     const cands = holdPool.filter((h) => { const d = ts - tms(h.a); return !paired.has(h.a) && !usedHold.has(h.a) && brandKey(h.a.merchant) === b && d >= -10 * 60e3 && d <= 3 * DAY && Math.min(score(curOf(h)), score(s)) === 0; })
-      .sort((x, y) => (Math.abs(+s.amount - +x.a.amount) - Math.abs(+s.amount - +y.a.amount)) || (tms(x.a) - tms(y.a)));
+      // κοντινότερο ποσό → μετά προτίμηση στη δέσμευση που έχει ήδη απόδειξη (ο υπάλληλος ανέβασε την απόδειξη της διαδρομής εκεί) → μετά χρόνος
+      .sort((x, y) => (Math.abs(+s.amount - +x.a.amount) - Math.abs(+s.amount - +y.a.amount)) || (score(curOf(y)) - score(curOf(x))) || (tms(x.a) - tms(y.a)));
     const h = cands[0];
     if (!h) { finalSettles.push(s); continue; }
     usedHold.add(h.a);
@@ -126,7 +127,7 @@ function dedupCharges(rows, opts = {}) {
   const all = [...realOut.values(), ...out.values(), ...finalSettles];
   if (opts.onlyHidden) return all.filter((c) => c._hidden); // για τον audit: ποιες ομάδες κρύβονται σκόπιμα
   let res = all.filter((c) => !c._hidden).map((c) => { const { _hidden, ...rest } = c; return rest; });
-  const strip = (arr) => arr.map((c) => { const { _settled, ...r } = c; return r; });
+  const strip = (arr) => opts.keepFlags ? arr : arr.map((c) => { const { _settled, ...r } = c; return r; });
   // [29/9] Δεσμεύσεις που ΑΚΥΡΩΘΗΚΑΝ (π.χ. ταξί που ακυρώθηκε χωρίς χρέωση): η Viva αποδέσμευσε τα λεφτά → δεν είναι χρέωση.
   if (opts.wallet) {
     const rel = releasedHoldIds(res, opts.wallet);

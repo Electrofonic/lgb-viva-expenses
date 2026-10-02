@@ -141,6 +141,34 @@ module.exports = async (req, res) => {
             detail: inDb.length ? `${day} ${store} ${k}€: υπάρχει στη Viva ΚΑΙ στη βάση αλλά ΔΕΝ φαίνεται στον υπάλληλο (dedup)` : `${day} ${store} ${k}€: υπάρχει στη Viva αλλά ΔΕΝ έχει έρθει στην εφαρμογή` });
         }
       }
+      // [2/10] ΕΛΕΓΧΟΣ ΤΑΞΙ & ΕΠΙΣΤΡΟΦΩΝ (χωρίς portal — από τα δεδομένα της Viva που ήδη έχει η εφαρμογή)
+      {
+        const DAYms = 864e5, nowT = Date.now();
+        const brand = (m) => { const U = String(m || "").toUpperCase(); if (/\bUBER|\bUBR\b/.test(U)) return "UBER"; if (/FREE.?NOW|\bFRN\b/.test(U)) return "FREENOW"; if (/\bBOLT\b/.test(U)) return "BOLT"; return null; };
+        const flagged = dedupCharges(raw || [], { wallet: wObj, keepFlags: true }).filter((c) => athDate(c.occurred_at) >= START_DATE);
+        const isA = (c) => /^AUTH-/.test(String(c.viva_tx_id || ""));
+        for (const h of flagged) {
+          if (!isA(h) || h._settled || !brand(h.merchant) || nowT - Date.parse(h.occurred_at) < 3 * DAYms) continue;
+          const el = h.raw && h.raw.elorus_id;
+          // τελική χρέωση ίδιας μάρκας 0–3 μέρες μετά, που φαίνεται ΧΩΡΙΣΤΑ
+          const s = flagged.find((c) => c !== h && (!isA(c) || c._settled) && brand(c.merchant) === brand(h.merchant) && Date.parse(c.occurred_at) - Date.parse(h.occurred_at) >= -36e5 && Date.parse(c.occurred_at) - Date.parse(h.occurred_at) <= 3 * DAYms);
+          const d = athDate(h.occurred_at);
+          if (el && s && s.raw && s.raw.elorus_id) issues.push({ type: "ELORUS_DOUBLE", amount: +h.amount, date: d, elorus: el, detail: `${d} ${brand(h.merchant)}: η δέσμευση ${(+h.amount).toFixed(2)}€ (χρέωση #${h.id}) ΚΑΙ η τελική χρέωση ${(+s.amount).toFixed(2)}€ (#${s.id}) είναι ΚΑΙ ΟΙ ΔΥΟ στο Elorus — η Viva χρέωσε μόνο ${(+s.amount).toFixed(2)}€. Ακύρωση εξόδου Elorus ${el}.` });
+          else if (el) issues.push({ type: "ELORUS_UNCHARGED_HOLD", amount: +h.amount, date: d, elorus: el, detail: `${d} ${brand(h.merchant)}: δέσμευση ${(+h.amount).toFixed(2)}€ (#${h.id}) είναι στο Elorus αλλά η Viva ΔΕΝ τη χρέωσε ποτέ (ακυρώθηκε). Ακύρωση εξόδου Elorus ${el}.` });
+        }
+        for (const c of flagged) if (c.amount_mismatch) issues.push({ type: "ELORUS_AMOUNT", amount: +c.amount, date: athDate(c.occurred_at), elorus: c.raw && c.raw.elorus_id, detail: `${athDate(c.occurred_at)} ${String(c.merchant).slice(0, 30)}: στο Elorus γράφει ${(+c.hold_amount).toFixed(2)}€ (η δέσμευση) ενώ η Viva χρέωσε ${(+c.amount).toFixed(2)}€ — διόρθωση ποσού στο έξοδο ${c.raw && c.raw.elorus_id}.` });
+        // ΕΠΙΣΤΡΟΦΕΣ χρημάτων στην κάρτα (refund) — το αντίστοιχο έξοδο θέλει ακύρωση/πίστωση στο Elorus
+        for (const x of dsRecent) {
+          if (String(x.walletId) !== w) continue;
+          const a = Number(x.amount); const desc = String(x.userDescription || x.counterPart || "");
+          if (!(a > 0) || !/Επιστροφή|Refund|Return/i.test(desc) || /Μεταφορά|Wallet2Wallet/i.test(desc)) continue;
+          const store = desc.replace(/^.*Viva Wallet Card\s*-?\s*/i, "").trim();
+          const k = a.toFixed(2);
+          const orig = flagged.filter((c) => Math.abs(+c.amount).toFixed(2) === k && Date.parse(c.occurred_at) <= Date.parse(fixDsTime(x.created))).sort((p, q) => Date.parse(q.occurred_at) - Date.parse(p.occurred_at))[0];
+          const d = athDate(fixDsTime(x.created));
+          issues.push({ type: "REFUND", amount: a, date: d, elorus: orig && orig.raw && orig.raw.elorus_id, detail: `${d} επιστροφή ${k}€ από ${store}` + (orig ? ` → αντιστοιχεί στη χρέωση #${orig.id} (${athDate(orig.occurred_at)})` + (orig.raw && orig.raw.elorus_id ? `, έξοδο Elorus ${orig.raw.elorus_id} θέλει ακύρωση/πίστωση` : ", δεν είναι στο Elorus") : ", δεν βρέθηκε αρχική χρέωση") });
+        }
+      }
       if (issues.length) totalIssues += issues.length;
       people.push({ wallet: w, name: NAMES[w] || w, ours: ours.length, viva: Object.values(vAmts).reduce((a, b) => a + b, 0), issues });
     }
