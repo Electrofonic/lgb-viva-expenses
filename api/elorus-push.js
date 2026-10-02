@@ -93,7 +93,10 @@ function fixDsTime(iso) { try { const w = new Date(iso); return new Date(w.getTi
 // ΙΔΙΟ dedup με το dashboard/my.js — ΚΡΙΣΙΜΟ ώστε διπλές φυσικές εγγραφές (cron/settlement)
 // της ίδιας αγοράς να ΜΗΝ δημιουργούν διπλά έξοδα στο Elorus.
 // [25/9] Ενιαίο ξεδίπλωμα για όλη την εφαρμογή → βλ. api/_dedup.js
-const { dedupCharges } = require("./_dedup.js");
+const { dedupCharges, brandKey } = require("./_dedup.js");
+// [2/10] Ταξί (Uber / FREE NOW / Bolt): ΔΕΝ καταχωρούμε τη δέσμευση. Περιμένουμε να έρθει η ΤΕΛΙΚΗ χρέωση από τη Viva
+// (τα χρήματα τραβήχτηκαν και δεν επιστράφηκαν) — τότε καταχωρείται με το πραγματικό ποσό. Αλλιώς βγαίνουν διπλά/λάθος ποσά.
+const isTaxiHoldUnsettled = (c) => /^AUTH-/.test(String(c.viva_tx_id || "")) && !!brandKey(c.merchant) && c._settled !== true;
 function athDate(iso) { try { return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Athens" }).format(new Date(iso)); } catch (e) { return String(iso || "").slice(0, 10); } }
 function grDate(iso) { try { return new Intl.DateTimeFormat("el-GR", { timeZone: "Europe/Athens", day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(iso)); } catch (e) { return ""; } }
 
@@ -434,6 +437,7 @@ async function attachAllReceipts(expenseId, urls, storeName) {
 // Δημιουργεί το expense στο Elorus για μία χρέωση (charge row). Επιστρέφει {ok, id?, skipped?, error?}
 async function pushCharge(c, nameByWallet, opts) {
   opts = opts || {};
+  if (!opts.force && isTaxiHoldUnsettled(c)) return { ok: false, skipped: "awaiting-settlement", detail: "Ταξί: περιμένουμε την τελική χρέωση της Viva πριν την καταχώρηση" };
   const raw0 = c.raw || {};
   // Αν ο άνθρωπος ορίσει ρητά τον τύπο (ή δώσει προμηθευτή), ΑΠΟΘΗΚΕΥΣΕ την απόφαση
   // πάνω στη χρέωση — ώστε ο ελεγκτής και κάθε επόμενο πέρασμα να τη σέβονται.
@@ -654,7 +658,7 @@ module.exports = async (req, res) => {
         const startD = startForWallet(wid); // πιλοτικός → 16/7, αλλιώς → 1/8 (Ιουλίου «σβήνουν»)
         const raw = await sbSelectAll("charges", `wallet_id=eq.${wid}&order=occurred_at.desc,id.desc`);
         const wObj2 = (Array.isArray(ws2) ? ws2 : []).find((x) => String(x.walletId) === String(wid));
-        for (const c of dedupCharges(raw || [], { wallet: wObj2 })) {
+        for (const c of dedupCharges(raw || [], { wallet: wObj2, keepFlags: true })) {
           if (athDate(c.occurred_at) < startD) continue;
           if (c.approved_loss || String(c.status) === "APPROVED_LOSS") continue; // [2/10] τα έκλεισε ο Κώστας
           const amt = Math.abs(+c.amount).toFixed(2);
@@ -681,6 +685,8 @@ module.exports = async (req, res) => {
               problems.push({ ...base, reason: "απόδειξη λιανικής καταχωρημένη σε προμηθευτή — πρέπει να είναι καρφωτή" });
             }
             if (!r0.elorus_primary) problems.push({ ...base, reason: "η απόδειξη δεν φαίνεται στη δεξιά προβολή του εξόδου" });
+          } else if (isTaxiHoldUnsettled(c)) {
+            pending.push({ ...base, reason: "ταξί — ολοκληρωμένο, περιμένει την τελική χρέωση της Viva για να καταχωρηθεί" });
           } else {
             problems.push({ ...base, reason: "ολοκληρωμένο αλλά ΔΕΝ πέρασε στο Elorus" });
           }
@@ -814,7 +820,7 @@ module.exports = async (req, res) => {
       const todo = [];
       for (const wid of members) {
         const raw = await sbSelectAll("charges", `wallet_id=eq.${wid}&order=occurred_at.desc,id.desc`);
-        for (const c of dedupCharges(raw || [])) if (c.has_receipt && c.project) todo.push(c);
+        for (const c of dedupCharges(raw || [], { keepFlags: true })) if (c.has_receipt && c.project && !isTaxiHoldUnsettled(c)) todo.push(c);
       }
       todo.sort((a, b) => (!!(a.raw && a.raw.elorus_id) - !!(b.raw && b.raw.elorus_id)) || String(b.occurred_at).localeCompare(String(a.occurred_at)));
       for (const c of todo) {
@@ -841,6 +847,12 @@ module.exports = async (req, res) => {
     const c = rows[0];
     if (String(c.wallet_id) !== w) return res.status(403).json({ error: "η χρέωση δεν είναι δική σου" });
 
+    // [2/10] ποια είναι η πραγματική κατάσταση της αγοράς (έχει τελική χρέωση; ποιο το τελικό ποσό;)
+    try {
+      const all = await sbSelectAll("charges", `wallet_id=eq.${w}&order=occurred_at.desc,id.desc`);
+      const me = dedupCharges(all || [], { keepFlags: true }).find((x) => String(x.id) === String(c.id));
+      if (me) { c._settled = !!me._settled; if (me.hold_amount && me._settled) c.amount = me.amount; }
+    } catch (e) {}
     const nameByWallet = await walletInfo();
     const r = await pushCharge(c, nameByWallet, {
       force: !!(body.force || q.force),
