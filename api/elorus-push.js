@@ -656,6 +656,7 @@ module.exports = async (req, res) => {
         const wObj2 = (Array.isArray(ws2) ? ws2 : []).find((x) => String(x.walletId) === String(wid));
         for (const c of dedupCharges(raw || [], { wallet: wObj2 })) {
           if (athDate(c.occurred_at) < startD) continue;
+          if (c.approved_loss || String(c.status) === "APPROVED_LOSS") continue; // [2/10] τα έκλεισε ο Κώστας
           const amt = Math.abs(+c.amount).toFixed(2);
           const store = cleanName(c.merchant);
           const when = grDate(c.occurred_at);

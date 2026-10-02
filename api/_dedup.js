@@ -47,6 +47,7 @@ function mergeInto(keep, other, opts = {}) {
   if (String(m.status) === "PENDING_CLEAR" && (!isAuthRow(other) || !isAuthRow(keep))) m.status = m.has_receipt && m.project ? "COMPLETE" : "MISSING_ALL";
   // κρυφή ομάδα μένει κρυφή — εκτός αν η εγγραφή που επιζεί είναι ΜΗ-κρυφή και έχει ήδη δουλειά (τότε ήταν ήδη ορατή)
   if (keep._hidden || (other._hidden && score(keep) === 0)) m._hidden = true; else delete m._hidden;
+  if (!isAuthRow(other) || !isAuthRow(keep) || keep._settled || other._settled) m._settled = true; // [2/10] η αγορά έχει τελική χρέωση
   return m;
 }
 
@@ -125,13 +126,14 @@ function dedupCharges(rows, opts = {}) {
   const all = [...realOut.values(), ...out.values(), ...finalSettles];
   if (opts.onlyHidden) return all.filter((c) => c._hidden); // για τον audit: ποιες ομάδες κρύβονται σκόπιμα
   let res = all.filter((c) => !c._hidden).map((c) => { const { _hidden, ...rest } = c; return rest; });
+  const strip = (arr) => arr.map((c) => { const { _settled, ...r } = c; return r; });
   // [29/9] Δεσμεύσεις που ΑΚΥΡΩΘΗΚΑΝ (π.χ. ταξί που ακυρώθηκε χωρίς χρέωση): η Viva αποδέσμευσε τα λεφτά → δεν είναι χρέωση.
   if (opts.wallet) {
     const rel = releasedHoldIds(res, opts.wallet);
-    if (opts.onlyReleased) return res.filter((c) => rel.has(c.id));
+    if (opts.onlyReleased) return strip(res.filter((c) => rel.has(c.id)));
     res = res.filter((c) => !rel.has(c.id));
   }
-  return res;
+  return strip(res);
 }
 
 // Ποιες εκκρεμείς δεσμεύσεις ΔΕΝ κρατιούνται πια από τη Viva (αποδεσμεύτηκαν/ακυρώθηκαν).
@@ -143,10 +145,14 @@ function dedupCharges(rows, opts = {}) {
 // Ποτέ δεν αγγίζουμε δεσμεύσεις με απόδειξη/project/Elorus ή νεότερες των 2 ωρών.
 function releasedHoldIds(list, wallet, now = Date.now()) {
   const released = new Set();
-  const pend = list.filter((c) => isAuthRow(c) && String(c.status) === "PENDING_CLEAR");
+  // δεσμεύσεις που ΔΕΝ έχουν ενωθεί με τελική χρέωση (ακόμα κι αν ο υπάλληλος ανέβασε ήδη απόδειξη)
+  const pend = list.filter((c) => isAuthRow(c) && !c._settled && !(c.raw && c.raw.elorus_id));
   const isCand = (c) => !c.has_receipt && !c.project && !(c.raw && c.raw.elorus_id) && !c.approved_loss && now - tms(c) > 2 * 3600e3;
   const cands = pend.filter(isCand);
   for (const c of cands) if (now - tms(c) > 14 * DAY) released.add(c.id);
+  // [2/10] Ταξί (Uber / FREE NOW / Bolt): χρεώνουν την τελική διαδρομή σε 1–2 μέρες. Δέσμευση ταξί χωρίς τελική χρέωση
+  //   για > 3 μέρες = ακυρωμένη διαδρομή (επιβεβαιώθηκε στη Viva 2/10: Αναστασία 2×7€, Ζωή 9€ δεν χρεώθηκαν ποτέ).
+  for (const c of cands) if (brandKey(c.merchant) && now - tms(c) > 3 * DAY) released.add(c.id);
   const rest = cands.filter((c) => !released.has(c.id));
   const amt = Number(wallet && wallet.amount), av = Number(wallet && wallet.available);
   if (!rest.length || !isFinite(amt) || !isFinite(av)) return released;
