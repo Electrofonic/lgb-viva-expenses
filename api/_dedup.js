@@ -26,6 +26,8 @@ const mkey = (m) => storeOf(m).replace(/[^A-Z0-9]/g, "").slice(0, 5);
 const brandKey = (m) => { const U = storeOf(m); if (/\bUBER|\bUBR\b/.test(U)) return "UBER"; if (/FREE.?NOW|\bFRN\b/.test(U)) return "FREENOW"; if (/\bBOLT\b/.test(U)) return "BOLT"; return null; };
 // Πόση «δουλειά» έχει πάνω της μια εγγραφή — επιζεί πάντα αυτή με την περισσότερη (για να μη χαθεί Elorus/απόδειξη/project).
 const score = (c) => (c.raw && c.raw.elorus_id ? 4 : 0) + (c.has_receipt ? 2 : 0) + (c.project ? 1 : 0);
+// [8/10] ΕΠΙΣΤΡΟΦΗ χρημάτων από τη Viva: γραμμή με ΘΕΤΙΚΟ ποσό (π.χ. +22€). Δεν είναι χρέωση — ακυρώνει μία χρέωση.
+const isRefundRow = (c) => { const r = (c && c.raw) || {}; const a = Number(r.Amount != null ? r.Amount : r.amount); return isFinite(a) && a > 0; };
 
 // Ενώνει δύο εγγραφές της ΙΔΙΑΣ αγοράς: επιστρέφει νέο αντικείμενο με ό,τι χρήσιμο έχουν και οι δύο.
 function mergeInto(keep, other, opts = {}) {
@@ -55,6 +57,9 @@ function dedupCharges(rows, opts = {}) {
   rows = (rows || []).filter((r) => r && String(r.status) !== "VOID_JULY");
   // 0) σωστή ώρα για τις cron-εγγραφές
   rows = rows.map((c) => ({ ...c, ...(isDup(c.merchant) ? { occurred_at: fixDsTime(c.occurred_at) } : {}), ...(HIDDEN_BEFORE_FIX.has(Number(c.id)) ? { _hidden: true } : {}) }));
+  // [8/10] οι επιστροφές βγαίνουν από τη λίστα χρεώσεων — χρησιμοποιούνται πιο κάτω για να ακυρώσουν την αντίστοιχη χρέωση
+  const refunds = rows.filter(isRefundRow).sort((a, b) => tms(a) - tms(b));
+  rows = rows.filter((r) => !isRefundRow(r));
 
   // 1) ίδιο viva_tx_id (webhook + cron) → μία εγγραφή. Επιζεί όποια έχει περισσότερη δουλειά.
   const byId = new Map();
@@ -124,7 +129,19 @@ function dedupCharges(rows, opts = {}) {
   }
 
   // Οι 21 κρυφές μένουν κρυφές ΠΑΝΤΑ (κάποιες έχουν ήδη περαστεί στο Elorus εκτός εφαρμογής → αλλιώς θα γράφονταν διπλά).
-  const all = [...realOut.values(), ...out.values(), ...finalSettles];
+  let all = [...realOut.values(), ...out.values(), ...finalSettles];
+  // [8/10] ΕΠΙΣΤΡΟΦΕΣ: κάθε επιστροφή ακυρώνει ΜΙΑ χρέωση ίδιου ποσού & ίδιου καταστήματος, έως 60 μέρες πριν.
+  //   Η ακυρωμένη χρέωση φεύγει από υπαλλήλους/υπενθυμίσεις/Elorus. Προτιμάμε αυτή που ΔΕΝ είναι στο Elorus,
+  //   μετά αυτή με τη λιγότερη δουλειά, μετά τη νεότερη. (Δήμητρα 6/10: 2×22€ Kardaras + επιστροφή 22€ → 1 χρέωση.)
+  const refunded = new Map(); // χρέωση → γραμμή επιστροφής
+  for (const rf of refunds) {
+    const k = amtKey(rf), mk = mkey(rf.merchant), tr = tms(rf);
+    const cands = all.filter((c) => !refunded.has(c) && !c.approved_loss && amtKey(c) === k && mkey(c.merchant) === mk && tms(c) <= tr + DAY && tr - tms(c) <= 60 * DAY)
+      .sort((a, b) => (!!(a.raw && a.raw.elorus_id) - !!(b.raw && b.raw.elorus_id)) || (score(a) - score(b)) || (tms(b) - tms(a)));
+    if (cands[0]) refunded.set(cands[0], rf);            // χωρίς σίγουρο ταίριασμα → δεν ακυρώνουμε τίποτα
+  }
+  if (opts.onlyRefunded) return [...refunded].map(([c, rf]) => ({ ...c, refund_tx: rf.viva_tx_id })); // για τον audit
+  all = all.filter((c) => !refunded.has(c));
   if (opts.onlyHidden) return all.filter((c) => c._hidden); // για τον audit: ποιες ομάδες κρύβονται σκόπιμα
   let res = all.filter((c) => !c._hidden).map((c) => { const { _hidden, ...rest } = c; return rest; });
   const strip = (arr) => opts.keepFlags ? arr : arr.map((c) => { const { _settled, ...r } = c; return r; });
@@ -174,4 +191,4 @@ function releasedHoldIds(list, wallet, now = Date.now()) {
   return released;
 }
 
-module.exports = { dedupCharges, fixDsTime, athOffMin, HIDDEN_BEFORE_FIX, brandKey, releasedHoldIds };
+module.exports = { dedupCharges, fixDsTime, athOffMin, HIDDEN_BEFORE_FIX, brandKey, releasedHoldIds, isRefundRow };
