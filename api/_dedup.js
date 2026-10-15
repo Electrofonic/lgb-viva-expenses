@@ -130,6 +130,36 @@ function dedupCharges(rows, opts = {}) {
 
   // Οι 21 κρυφές μένουν κρυφές ΠΑΝΤΑ (κάποιες έχουν ήδη περαστεί στο Elorus εκτός εφαρμογής → αλλιώς θα γράφονταν διπλά).
   let all = [...realOut.values(), ...out.values(), ...finalSettles];
+  // [15/10] ΞΑΝΑ-ΚΡΑΤΗΣΗ ΤΗΣ ΙΔΙΑΣ ΑΓΟΡΑΣ: το μηχάνημα κάνει 2η δέσμευση ίδιου ποσού λίγα λεπτά μετά και η Viva
+  //   χρεώνει ΤΗ ΔΕΥΤΕΡΗ — ενώ ο υπάλληλος έχει ήδη ανεβάσει απόδειξη στην ΠΡΩΤΗ. (Αίας 12/10: Αυτομέδων 18€.)
+  //   Ζεύγος = Α (δέσμευση ΜΕ δουλειά, χωρίς τελική χρέωση) + Β (ίδιο ποσό & κατάστημα, ≤30′, ΧΩΡΙΣ καμία δουλειά).
+  //   • Β έχει τελική χρέωση και Α όχι (>24 ώρες μετά) → είναι η ίδια αγορά: η δουλειά της Α (απόδειξη, project,
+  //     δεσμός Elorus) περνά στη Β και η Α φεύγει. Δεν ξαναζητείται απόδειξη, δεν γίνεται 2η καταχώρηση.
+  //   • Καμία δεν έχει τελική χρέωση ακόμα (<3 μέρες) → η Β δεν ζητείται προσωρινά, μέχρι να ξεκαθαρίσει η Viva.
+  //   • Αν τελικά χρεωθεί ΚΑΙ η Α → ήταν δύο αγορές: η Β εμφανίζεται κανονικά.
+  {
+    const nowR = Date.now();
+    const As = all.filter((c) => isAuthRow(c) && !c._settled && score(c) > 0 && !c.approved_loss);
+    const drop = new Set(), hideB = new Set();
+    for (const A of As) {
+      const Bs = all.filter((b) => b !== A && !drop.has(b) && !hideB.has(b) && score(b) === 0 && !b.approved_loss
+        && amtKey(b) === amtKey(A) && mkey(b.merchant) === mkey(A.merchant) && Math.abs(tms(b) - tms(A)) <= 30 * 60e3)
+        .sort((x, y) => Math.abs(tms(x) - tms(A)) - Math.abs(tms(y) - tms(A)));
+      const B = Bs[0];
+      if (!B) continue;
+      if (B._settled && nowR - tms(A) > DAY) {
+        const m = mergeInto(B, A);
+        if (A.raw && A.raw.elorus_id && !(m.raw && m.raw.elorus_id)) {
+          for (const k of ["elorus_id", "elorus_at", "elorus_cat", "elorus_option", "elorus_attachment", "elorus_primary", "elorus_att_count", "elorus_supplier", "elorus_type"]) if (A.raw[k] !== undefined) m.raw[k] = A.raw[k];
+        }
+        m.reauth_of = A.id;
+        all[all.indexOf(B)] = m; drop.add(A);
+      } else if (!B._settled && nowR - tms(A) < 3 * DAY) {
+        hideB.add(B);
+      }
+    }
+    if (drop.size || hideB.size) all = all.filter((c) => !drop.has(c) && !hideB.has(c));
+  }
   // [8/10] ΕΠΙΣΤΡΟΦΕΣ: κάθε επιστροφή ακυρώνει ΜΙΑ χρέωση ίδιου ποσού & ίδιου καταστήματος, έως 60 μέρες πριν.
   //   Η ακυρωμένη χρέωση φεύγει από υπαλλήλους/υπενθυμίσεις/Elorus. Προτιμάμε αυτή που ΔΕΝ είναι στο Elorus,
   //   μετά αυτή με τη λιγότερη δουλειά, μετά τη νεότερη. (Δήμητρα 6/10: 2×22€ Kardaras + επιστροφή 22€ → 1 χρέωση.)
