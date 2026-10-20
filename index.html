@@ -1001,7 +1001,7 @@ async function reloadState(manual){
   try{
     const btn=document.getElementById("refreshBtn");
     if(manual&&btn){btn.disabled=true;btn.textContent="↻ Ανανεώνει…";}
-    const r=await fetch("/api/state",{cache:"no-store"});
+    const r=await fetch("/api/state?dedup=1",{cache:"no-store"});
     if(!r.ok){ if(manual&&btn){btn.disabled=false;btn.textContent="↻ Ανανέωση";} return; }
     const d=await r.json();
     LIVE_OK=true;
@@ -1027,7 +1027,7 @@ async function reloadState(manual){
         // ΔΕΝ φιλτράρουμε εδώ με START_DATE — πρώτα κάνουμε dedup σε ΟΛΟΥΣ τους μήνες (όπως η προσωπική σελίδα),
         // ώστε οι σημερινές εκκαθαρίσεις παλιών αγορών να ταιριάξουν & να μη μείνουν σαν φαντάσματα.
         let when=c.occurred_at;
-        if(/Viva Wallet Card/i.test(c.merchant||"")) when=fixDsTime(when); // cron-εγγραφή → διόρθωση ώρας
+        if(!d.deduped&&/Viva Wallet Card/i.test(c.merchant||"")) when=fixDsTime(when); // [20/10] με server-dedup η ώρα είναι ήδη διορθωμένη // cron-εγγραφή → διόρθωση ώρας
         const gp=grParts(when);
         ALL_CHARGES.push({id:++idx,dbId:c.id,personId:p.id,day:new Date(when).getDate(),when,
           dm:gp.dm,hm:gp.hm,
@@ -1039,10 +1039,11 @@ async function reloadState(manual){
           pending:c.status==="PENDING_CLEAR",status:c.status,
           vid:String(c.viva_tx_id||""),
           raw:c.raw||{},   // στοιχεία παραστατικού (τύπος, ΑΦΜ, αρ., ημ/νία) + σύνδεση Elorus
-          internal:c.project===INTERNAL,approvedLoss:c.status==="APPROVED_LOSS"});
+          internal:c.project===INTERNAL,approvedLoss:c.status==="APPROVED_LOSS"||!!c.approved_loss});
       });
       // DEDUP: (1) ένωσε ίδια συναλλαγή, (2) ρίξε cron-εκκαθαρίσεις σε προγενέστερη πραγματική ίδιου ποσού, (3) ένωσε ορφανές cron-εγγραφές.
-      {const norm=id=>String(id||"").replace(/^AUTH-/,""),isDup=m=>/Viva Wallet Card/i.test(m||"");
+      // [20/10] Ο server έχει ήδη κάνει το ΙΔΙΟ dedup με τη σελίδα του υπαλλήλου → εδώ ΔΕΝ ξανα-ενώνουμε (θα έσβηνε πραγματικές χρεώσεις).
+      if(!d.deduped){const norm=id=>String(id||"").replace(/^AUTH-/,""),isDup=m=>/Viva Wallet Card/i.test(m||"");
        const mp=new Map();
        for(const c of ALL_CHARGES){const k=norm(c.vid);const ex=mp.get(k);
          if(!ex){mp.set(k,c);continue;}
